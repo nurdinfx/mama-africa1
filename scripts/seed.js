@@ -109,6 +109,25 @@ const seedData = async () => {
       }
     }
 
+    const existingNuur = await User.findOne({ $or: [{ email: 'nuurdiin12@example.com' }, { username: 'nuurdiin12' }] });
+    if (!existingNuur) {
+      const nuur = new User({
+        name: 'Nuurdiin',
+        email: 'nuurdiin12@example.com',
+        username: 'nuurdiin12',
+        password: 'test123',
+        role: 'manager',
+        phone: '+252000000',
+        branch: mainBranch._id,
+        isActive: true,
+        isDemo: false
+      });
+      await nuur.save();
+      console.log('✅ Created user: Nuurdiin');
+    } else {
+      console.log('✅ User already exists: Nuurdiin');
+    }
+
     // Create inventory items
     const inventoryItems = [
       {
