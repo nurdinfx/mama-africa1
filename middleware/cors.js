@@ -9,8 +9,7 @@ const corsOptions = {
       'http://localhost:3000',
       'http://localhost:3001',
       'http://localhost:5173',
-      'https://mama-africa-phi.vercel.app',
-      'https://your-restaurant-app.vercel.app',
+      'https://mama-africa1.vercel.app',
       process.env.FRONTEND_URL,
       process.env.PRODUCTION_FRONTEND_URL
     ].filter(Boolean);

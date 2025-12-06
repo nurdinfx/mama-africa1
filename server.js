@@ -27,7 +27,8 @@ const io = new Server(server, {
     origin: [
       process.env.FRONTEND_URL || "http://localhost:3000",
       "http://localhost:3001",
-      "http://localhost:5173"
+      "http://localhost:5173",
+      "https://mama-africa1.vercel.app"
     ],
     methods: ["GET", "POST", "PUT", "DELETE"]
   }
@@ -40,7 +41,7 @@ const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:3001',
   'http://localhost:5173',
-  'https://mama-africa-phi.vercel.app',
+  'https://mama-africa1.vercel.app',
   process.env.PRODUCTION_FRONTEND_URL
 ].filter(Boolean).map(url => url.trim());
 
