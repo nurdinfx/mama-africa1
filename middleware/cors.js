@@ -15,23 +15,17 @@ const corsOptions = {
       process.env.PRODUCTION_FRONTEND_URL
     ].filter(Boolean);
 
-    // In production, allow all Vercel deployments and configured origins
-    if (process.env.NODE_ENV === 'production') {
-      // Allow all Vercel preview and production deployments
-      if (origin && (origin.includes('.vercel.app') || allowedOrigins.indexOf(origin) !== -1)) {
-        return callback(null, true);
-      }
+    // Allow all Vercel deployments and configured origins
+    if (origin && (origin.includes('.vercel.app') || allowedOrigins.indexOf(origin) !== -1)) {
+      return callback(null, true);
     }
 
     if (allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
     } else {
-      // In development, be more permissive
-      if (process.env.NODE_ENV !== 'production') {
-        callback(null, true);
-      } else {
-        callback(new Error('Not allowed by CORS'));
-      }
+      // Be more permissive - allow all origins for now
+      console.log('⚠️ CORS: Allowing origin:', origin);
+      callback(null, true);
     }
   },
   credentials: true,
