@@ -103,6 +103,11 @@ import purchaseRoutes from './routes/purchases.js';
 import purchaseOrderRoutes from './routes/purchaseOrders.js';
 import supplierRoutes from './routes/suppliers.js';
 
+// ADD FINANCE AND REPORTS ROUTES
+import financeRoutes from './routes/finance.js';
+import reportRoutes from './routes/reports.js';
+import inventoryRoutes from './routes/inventory.js';
+
 // Simple File Upload Setup (without sharp)
 import multer from 'multer';
 
@@ -269,8 +274,13 @@ app.use('/api/v1/purchases', purchaseRoutes);
 app.use('/api/v1/purchase-orders', purchaseOrderRoutes);
 app.use('/api/v1/suppliers', supplierRoutes);
 
-// Health check endpoint
-app.get('/api/health', (req, res) => {
+// ADD FINANCE AND REPORTS ROUTES
+app.use('/api/v1/finance', financeRoutes);
+app.use('/api/v1/reports', reportRoutes);
+app.use('/api/v1/inventory', inventoryRoutes);
+
+// Health check endpoints (both /api/health and /api/v1/health)
+const healthHandler = (req, res) => {
   const health = {
     status: 'OK',
     timestamp: new Date().toISOString(),
@@ -286,7 +296,10 @@ app.get('/api/health', (req, res) => {
   };
   
   res.json(health);
-});
+};
+
+app.get('/api/health', healthHandler);
+app.get('/api/v1/health', healthHandler);
 
 // Root endpoint
 app.get('/', (req, res) => {
