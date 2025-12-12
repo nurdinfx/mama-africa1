@@ -83,7 +83,7 @@ const orderSchema = new mongoose.Schema({
   },
   paymentMethod: {
     type: String,
-    enum: ['cash', 'card', 'mobile', 'credit'],
+    enum: ['cash', 'card', 'mobile', 'credit', 'zaad', 'sahal', 'edahab', 'mycash', 'bank'],
     default: 'cash'
   },
   paymentStatus: {
@@ -111,37 +111,37 @@ const orderSchema = new mongoose.Schema({
 });
 
 // Pre-save middleware to calculate totals
-orderSchema.pre('save', function(next) {
+orderSchema.pre('save', function (next) {
   // Calculate item totals
   this.items.forEach(item => {
     item.total = item.price * item.quantity;
   });
-  
+
   // Calculate subtotal
   this.subtotal = this.items.reduce((sum, item) => sum + item.total, 0);
-  
+
   // Calculate final total
   this.finalTotal = this.subtotal + this.tax + this.serviceCharge - this.discount;
-  
+
   next();
 });
 
 // Static method to generate order number
-orderSchema.statics.generateOrderNumber = async function(branchCode) {
+orderSchema.statics.generateOrderNumber = async function (branchCode) {
   const today = new Date();
   const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
   const prefix = `ORD-${branchCode}-${dateStr}`;
-  
+
   const lastOrder = await this.findOne({
     orderNumber: new RegExp(`^${prefix}`)
   }).sort({ orderNumber: -1 });
-  
+
   let sequence = 1;
   if (lastOrder) {
     const lastSequence = parseInt(lastOrder.orderNumber.slice(-4));
     sequence = lastSequence + 1;
   }
-  
+
   return `${prefix}-${sequence.toString().padStart(4, '0')}`;
 };
 
@@ -153,7 +153,7 @@ orderSchema.index({ orderNumber: 1 });
 orderSchema.index({ createdAt: 1 });
 
 // Virtual for order duration
-orderSchema.virtual('duration').get(function() {
+orderSchema.virtual('duration').get(function () {
   if (this.completedAt && this.createdAt) {
     return Math.round((this.completedAt - this.createdAt) / 60000); // minutes
   }
@@ -161,7 +161,7 @@ orderSchema.virtual('duration').get(function() {
 });
 
 // Virtual for kitchen duration
-orderSchema.virtual('kitchenDuration').get(function() {
+orderSchema.virtual('kitchenDuration').get(function () {
   if (this.updatedAt && this.createdAt) {
     return Math.round((this.updatedAt - this.createdAt) / 60000); // minutes
   }

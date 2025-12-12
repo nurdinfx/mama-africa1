@@ -9,16 +9,16 @@ import mongoose from 'mongoose';
 export const createOrder = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
-  
+
   try {
     const { items, orderType, tableId, customerId, customerName, customerPhone, notes, paymentMethod } = req.body;
-    
+
     if (!items || !Array.isArray(items) || items.length === 0) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
-        message: 'Order must contain at least one item' 
+        message: 'Order must contain at least one item'
       });
     }
 
@@ -28,44 +28,44 @@ export const createOrder = async (req, res) => {
     // Process items and calculate totals
     let subtotal = 0;
     const orderItems = [];
-    
+
     for (const item of items) {
       const product = await Product.findById(item.product).session(session);
       if (!product) {
         await session.abortTransaction();
         session.endSession();
-        return res.status(404).json({ 
+        return res.status(404).json({
           success: false,
-          message: `Product not found: ${item.product}` 
+          message: `Product not found: ${item.product}`
         });
       }
-      
+
       if (!product.isAvailable) {
         await session.abortTransaction();
         session.endSession();
-        return res.status(400).json({ 
+        return res.status(400).json({
           success: false,
-          message: `Product ${product.name} is not available` 
+          message: `Product ${product.name} is not available`
         });
       }
-      
+
       if (product.stock < item.quantity) {
         await session.abortTransaction();
         session.endSession();
-        return res.status(400).json({ 
+        return res.status(400).json({
           success: false,
-          message: `Insufficient stock for ${product.name}. Available: ${product.stock}, Requested: ${item.quantity}` 
+          message: `Insufficient stock for ${product.name}. Available: ${product.stock}, Requested: ${item.quantity}`
         });
       }
-      
+
       // Update product stock
       product.stock -= item.quantity;
       product.salesCount += item.quantity;
       await product.save({ session });
-      
+
       const itemTotal = product.price * item.quantity;
       subtotal += itemTotal;
-      
+
       orderItems.push({
         product: product._id,
         quantity: item.quantity,
@@ -78,7 +78,7 @@ export const createOrder = async (req, res) => {
     // Calculate totals
     const taxRate = req.user.branch.settings?.taxRate || 10;
     const serviceChargeRate = req.user.branch.settings?.serviceCharge || 5;
-    
+
     const tax = subtotal * (taxRate / 100);
     const serviceCharge = subtotal * (serviceChargeRate / 100);
     const finalTotal = subtotal + tax + serviceCharge;
@@ -107,21 +107,21 @@ export const createOrder = async (req, res) => {
       if (!table) {
         await session.abortTransaction();
         session.endSession();
-        return res.status(404).json({ 
+        return res.status(404).json({
           success: false,
-          message: 'Table not found' 
+          message: 'Table not found'
         });
       }
-      
+
       if (table.status !== 'available') {
         await session.abortTransaction();
         session.endSession();
-        return res.status(400).json({ 
+        return res.status(400).json({
           success: false,
-          message: `Table ${table.number} is not available` 
+          message: `Table ${table.number} is not available`
         });
       }
-      
+
       // Update table status
       table.status = 'occupied';
       table.currentSession = {
@@ -162,7 +162,7 @@ export const createOrder = async (req, res) => {
       { path: 'customer', select: 'name phone' },
       { path: 'cashier', select: 'name' }
     ]);
-    
+
     await session.commitTransaction();
     session.endSession();
 
@@ -182,8 +182,18 @@ export const createOrder = async (req, res) => {
   } catch (error) {
     await session.abortTransaction();
     session.endSession();
-    
+
     console.error('Order creation error:', error);
+
+    // Handle Mongoose Validation Errors
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({
+        success: false,
+        message: 'Order validation failed: ' + Object.values(error.errors).map(e => e.message).join(', '),
+        error: error.message
+      });
+    }
+
     res.status(500).json({
       success: false,
       message: 'Failed to create order',
@@ -195,23 +205,23 @@ export const createOrder = async (req, res) => {
 // Get all orders
 export const getOrders = async (req, res) => {
   try {
-    const { 
-      page = 1, 
-      limit = 20, 
-      status, 
-      orderType, 
+    const {
+      page = 1,
+      limit = 20,
+      status,
+      orderType,
       paymentStatus,
       kitchenStatus,
-      startDate, 
+      startDate,
       endDate,
       search,
       sortBy = 'createdAt',
       sortOrder = 'desc'
     } = req.query;
-    
+
     // Build filter - handle both ObjectId and string branch IDs
     const filter = { branch: req.user.branch._id };
-    
+
     if (status) {
       if (status === 'active') {
         filter.status = { $in: ['pending', 'confirmed', 'preparing', 'ready'] };
@@ -219,20 +229,20 @@ export const getOrders = async (req, res) => {
         filter.status = status;
       }
     }
-    
+
     if (kitchenStatus) {
       filter.kitchenStatus = kitchenStatus;
     }
-    
+
     if (orderType) filter.orderType = orderType;
     if (paymentStatus) filter.paymentStatus = paymentStatus;
-    
+
     if (startDate || endDate) {
       filter.createdAt = {};
       if (startDate) filter.createdAt.$gte = new Date(startDate);
       if (endDate) filter.createdAt.$lte = new Date(endDate);
     }
-    
+
     if (search) {
       filter.$or = [
         { orderNumber: { $regex: search, $options: 'i' } },
@@ -241,10 +251,10 @@ export const getOrders = async (req, res) => {
         { tableNumber: { $regex: search, $options: 'i' } }
       ];
     }
-    
+
     const sortConfig = {};
     sortConfig[sortBy] = sortOrder === 'desc' ? -1 : 1;
-    
+
     const orders = await Order.find(filter)
       .populate([
         { path: 'items.product', select: 'name category price' },
@@ -256,9 +266,9 @@ export const getOrders = async (req, res) => {
       .limit(limit * 1)
       .skip((page - 1) * limit)
       .lean();
-    
+
     const total = await Order.countDocuments(filter);
-    
+
     res.json({
       success: true,
       data: {
@@ -271,10 +281,10 @@ export const getOrders = async (req, res) => {
         }
       }
     });
-    
+
   } catch (error) {
     console.error('Get orders error:', error);
-    
+
     // Handle CastError specifically
     if (error.name === 'CastError') {
       return res.status(400).json({
@@ -282,7 +292,7 @@ export const getOrders = async (req, res) => {
         message: 'Invalid data format in request'
       });
     }
-    
+
     res.status(500).json({
       success: false,
       message: 'Failed to fetch orders'
@@ -293,29 +303,29 @@ export const getOrders = async (req, res) => {
 // Get kitchen orders (specialized for kitchen view)
 export const getKitchenOrders = async (req, res) => {
   try {
-    const { 
+    const {
       kitchenStatus = 'all',
       limit = 50,
       startDate,
       endDate
     } = req.query;
-    
+
     // Build filter for kitchen orders
-    const filter = { 
+    const filter = {
       branch: req.user.branch._id,
       status: { $in: ['pending', 'confirmed', 'preparing', 'ready'] }
     };
-    
+
     if (kitchenStatus && kitchenStatus !== 'all') {
       filter.kitchenStatus = kitchenStatus;
     }
-    
+
     if (startDate || endDate) {
       filter.createdAt = {};
       if (startDate) filter.createdAt.$gte = new Date(startDate);
       if (endDate) filter.createdAt.$lte = new Date(endDate);
     }
-    
+
     const orders = await Order.find(filter)
       .populate([
         { path: 'items.product', select: 'name category' },
@@ -325,7 +335,7 @@ export const getKitchenOrders = async (req, res) => {
       .sort({ createdAt: 1 }) // Oldest first for kitchen
       .limit(limit * 1)
       .lean();
-    
+
     // Get kitchen statistics
     const stats = await Order.aggregate([
       {
@@ -341,17 +351,17 @@ export const getKitchenOrders = async (req, res) => {
         }
       }
     ]);
-    
+
     const statusStats = {
       pending: 0,
       preparing: 0,
       ready: 0
     };
-    
+
     stats.forEach(stat => {
       statusStats[stat._id] = stat.count;
     });
-    
+
     res.json({
       success: true,
       data: {
@@ -359,7 +369,7 @@ export const getKitchenOrders = async (req, res) => {
         stats: statusStats
       }
     });
-    
+
   } catch (error) {
     console.error('Get kitchen orders error:', error);
     res.status(500).json({
@@ -374,7 +384,7 @@ export const updateOrderStatus = async (req, res) => {
   try {
     const { id } = req.params;
     const { status, preparationTime, kitchenStatus } = req.body;
-    
+
     const order = await Order.findOne({ _id: id, branch: req.user.branch._id });
     if (!order) {
       return res.status(404).json({
@@ -382,7 +392,7 @@ export const updateOrderStatus = async (req, res) => {
         message: 'Order not found'
       });
     }
-    
+
     // Update status
     if (status) {
       const validStatuses = ['pending', 'confirmed', 'preparing', 'ready', 'served', 'completed', 'cancelled'];
@@ -394,7 +404,7 @@ export const updateOrderStatus = async (req, res) => {
       }
       order.status = status;
     }
-    
+
     // Update kitchen status
     if (kitchenStatus) {
       const validKitchenStatuses = ['pending', 'preparing', 'ready', 'served'];
@@ -405,13 +415,13 @@ export const updateOrderStatus = async (req, res) => {
         });
       }
       order.kitchenStatus = kitchenStatus;
-      
+
       // If kitchen status is ready, update order status
       if (kitchenStatus === 'ready') {
         order.status = 'ready';
       }
     }
-    
+
     const now = new Date();
     if (status === 'preparing' && preparationTime) {
       order.preparationTime = preparationTime;
@@ -427,7 +437,7 @@ export const updateOrderStatus = async (req, res) => {
           $inc: { stock: item.quantity }
         });
       }
-      
+
       // Free table
       if (order.table) {
         await Table.findByIdAndUpdate(order.table, {
@@ -436,7 +446,7 @@ export const updateOrderStatus = async (req, res) => {
         });
       }
     }
-    
+
     await order.save();
     await order.populate([
       { path: 'items.product', select: 'name category' },
@@ -444,24 +454,24 @@ export const updateOrderStatus = async (req, res) => {
       { path: 'customer', select: 'name phone' },
       { path: 'cashier', select: 'name' }
     ]);
-    
+
     // Emit real-time events for both orders and kitchen
     if (req.io) {
       req.io.to(`branch-${req.user.branch._id}`).emit('order-status-updated', order);
       req.io.to(`kitchen-${req.user.branch._id}`).emit('kitchen-order-updated', order);
       req.io.to(`pos-${req.user.branch._id}`).emit('order-updated', order);
-      
+
       if (order.kitchenStatus === 'ready') {
         req.io.to(`branch-${req.user.branch._id}`).emit('order-ready', order);
       }
     }
-    
+
     res.json({
       success: true,
       message: `Order updated successfully`,
       data: order
     });
-    
+
   } catch (error) {
     console.error('Update order status error:', error);
     res.status(500).json({
@@ -475,11 +485,11 @@ export const updateOrderStatus = async (req, res) => {
 export const processPayment = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
-  
+
   try {
     const { id } = req.params;
     const { paymentMethod, amount, notes } = req.body;
-    
+
     const order = await Order.findOne({ _id: id, branch: req.user.branch._id }).session(session);
     if (!order) {
       await session.abortTransaction();
@@ -489,7 +499,7 @@ export const processPayment = async (req, res) => {
         message: 'Order not found'
       });
     }
-    
+
     if (order.paymentStatus === 'paid') {
       await session.abortTransaction();
       session.endSession();
@@ -498,7 +508,7 @@ export const processPayment = async (req, res) => {
         message: 'Order is already paid'
       });
     }
-    
+
     if (amount < order.finalTotal) {
       await session.abortTransaction();
       session.endSession();
@@ -507,25 +517,25 @@ export const processPayment = async (req, res) => {
         message: `Payment amount (${amount}) is less than order total (${order.finalTotal})`
       });
     }
-    
+
     order.paymentMethod = paymentMethod;
     order.paymentStatus = 'paid';
     order.status = 'completed';
     order.completedAt = new Date();
-    
+
     await order.save({ session });
-    
+
     if (order.table) {
       await Table.findByIdAndUpdate(order.table, {
         status: 'available',
         currentSession: null
       }, { session });
     }
-    
+
     if (order.customer) {
       const pointsEarned = Math.floor(order.finalTotal);
       await Customer.findByIdAndUpdate(order.customer, {
-        $inc: { 
+        $inc: {
           loyaltyPoints: pointsEarned,
           totalOrders: 1,
           totalSpent: order.finalTotal
@@ -533,15 +543,15 @@ export const processPayment = async (req, res) => {
         lastOrder: new Date()
       }, { session });
     }
-    
+
     await session.commitTransaction();
     session.endSession();
-    
+
     if (req.io) {
       req.io.to(`branch-${req.user.branch._id}`).emit('order-completed', order);
       req.io.to(`kitchen-${req.user.branch._id}`).emit('order-completed', order);
     }
-    
+
     res.json({
       success: true,
       message: 'Payment processed successfully',
@@ -550,11 +560,11 @@ export const processPayment = async (req, res) => {
         change: amount - order.finalTotal
       }
     });
-    
+
   } catch (error) {
     await session.abortTransaction();
     session.endSession();
-    
+
     console.error('Process payment error:', error);
     res.status(500).json({
       success: false,
@@ -567,10 +577,10 @@ export const processPayment = async (req, res) => {
 export const getOrderStats = async (req, res) => {
   try {
     const { period = 'today' } = req.query;
-    
+
     let startDate, endDate;
     const now = new Date();
-    
+
     switch (period) {
       case 'today':
         startDate = new Date(now.setHours(0, 0, 0, 0));
@@ -592,12 +602,12 @@ export const getOrderStats = async (req, res) => {
         startDate = new Date(now.setHours(0, 0, 0, 0));
         endDate = new Date(now.setHours(23, 59, 59, 999));
     }
-    
-    const match = { 
+
+    const match = {
       branch: req.user.branch._id,
       createdAt: { $gte: startDate, $lte: endDate }
     };
-    
+
     const stats = await Order.aggregate([
       { $match: match },
       {
@@ -615,7 +625,7 @@ export const getOrderStats = async (req, res) => {
         }
       }
     ]);
-    
+
     res.json({
       success: true,
       data: {
@@ -629,7 +639,7 @@ export const getOrderStats = async (req, res) => {
         }
       }
     });
-    
+
   } catch (error) {
     console.error('Get order stats error:', error);
     res.status(500).json({

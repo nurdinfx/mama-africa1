@@ -8,6 +8,7 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import { v2 as cloudinary } from 'cloudinary';
 
 // Fix for __dirname in ES modules
 const __filename = fileURLToPath(import.meta.url);
@@ -17,6 +18,30 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+// Optional Cloudinary support for persistent image storage
+const cloudinaryEnabled = Boolean(
+  process.env.CLOUDINARY_URL ||
+  (process.env.CLOUDINARY_CLOUD_NAME &&
+    process.env.CLOUDINARY_API_KEY &&
+    process.env.CLOUDINARY_API_SECRET)
+);
+
+if (cloudinaryEnabled) {
+  if (process.env.CLOUDINARY_URL) {
+    cloudinary.config(process.env.CLOUDINARY_URL);
+  } else {
+    cloudinary.config({
+      cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+      api_key: process.env.CLOUDINARY_API_KEY,
+      api_secret: process.env.CLOUDINARY_API_SECRET,
+      secure: true
+    });
+  }
+  console.log('✅ Cloudinary enabled for uploads');
+} else {
+  console.log('ℹ️ Cloudinary not configured; falling back to local uploads');
+}
 
 // Create HTTP server FIRST
 const server = createServer(app);
@@ -147,14 +172,36 @@ app.post('/api/v1/upload', upload.single('image'), async (req, res) => {
       });
     }
 
-    const imageData = {
-      filename: req.file.filename,
-      originalName: req.file.originalname,
-      path: `/uploads/products/${req.file.filename}`,
-      fullUrl: `${req.protocol}://${req.get('host')}/uploads/products/${req.file.filename}`,
-      size: req.file.size,
-      uploadedAt: new Date().toISOString()
-    };
+    let imageData;
+
+    if (cloudinaryEnabled) {
+      const folder = `rms/restaurants/${req.user?.branch?._id || 'public'}/products`;
+
+      const uploadResult = await cloudinary.uploader.upload(req.file.path, {
+        folder
+      });
+
+      // Remove local temp file after uploading to Cloudinary
+      fs.unlink(req.file.path, () => {});
+
+      imageData = {
+        url: uploadResult.secure_url,
+        fullUrl: uploadResult.secure_url,
+        path: uploadResult.secure_url,
+        publicId: uploadResult.public_id,
+        provider: 'cloudinary'
+      };
+    } else {
+      imageData = {
+        filename: req.file.filename,
+        originalName: req.file.originalname,
+        path: `/uploads/products/${req.file.filename}`,
+        fullUrl: `${req.protocol}://${req.get('host')}/uploads/products/${req.file.filename}`,
+        size: req.file.size,
+        uploadedAt: new Date().toISOString(),
+        provider: 'local'
+      };
+    }
 
     res.json({
       success: true,
