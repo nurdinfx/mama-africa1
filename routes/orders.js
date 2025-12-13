@@ -8,12 +8,14 @@ import {
   getKitchenOrders,
   updateOrderStatus,
   processPayment,
-  getOrderStats
+  getOrderStats,
+  updateOrder
 } from '../controllers/orderController.js';
 
 const router = express.Router();
 
 router.post('/', auth, authorize('admin', 'manager', 'cashier', 'waiter'), createOrder);
+router.put('/:id', auth, authorize('admin', 'manager', 'cashier', 'waiter'), updateOrder);
 router.get('/', auth, authorize('admin', 'manager', 'cashier', 'waiter'), getOrders);
 router.get('/kitchen', auth, authorize('admin', 'manager', 'chef', 'kitchen'), getKitchenOrders);
 router.get('/stats', auth, authorize('admin', 'manager'), getOrderStats);

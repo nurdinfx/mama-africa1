@@ -202,6 +202,137 @@ export const createOrder = async (req, res) => {
   }
 };
 
+// Update order
+export const updateOrder = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { id } = req.params;
+    const { items, notes } = req.body;
+
+    // fetch existing order
+    const order = await Order.findOne({ _id: id, branch: req.user.branch._id }).session(session);
+    if (!order) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found'
+      });
+    }
+
+    if (order.status === 'completed' || order.status === 'cancelled' || order.paymentStatus === 'paid') {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot update completed or paid orders'
+      });
+    }
+
+    // 1. REVERT PREVIOUS STOCK
+    for (const item of order.items) {
+      await Product.findByIdAndUpdate(
+        item.product,
+        {
+          $inc: { stock: item.quantity, salesCount: -item.quantity },
+        },
+        { session }
+      );
+    }
+
+    // 2. VALIDATE AND RESERVE NEW STOCK
+    let subtotal = 0;
+    const orderItems = [];
+
+    for (const item of items) {
+      const product = await Product.findById(item.product).session(session);
+
+      if (!product) {
+        throw new Error(`Product not found: ${item.product}`);
+      }
+
+      if (!product.isAvailable) {
+        throw new Error(`Product ${product.name} is not available`);
+      }
+
+      // Check stock (remember we just credited back the old stock, so product.stock is now "fresh")
+      if (product.stock < item.quantity) {
+        throw new Error(`Insufficient stock for ${product.name}. Available: ${product.stock}, Requested: ${item.quantity}`);
+      }
+
+      // Update product stock
+      product.stock -= item.quantity;
+      product.salesCount += item.quantity;
+      await product.save({ session });
+
+      const itemTotal = product.price * item.quantity;
+      subtotal += itemTotal;
+
+      orderItems.push({
+        product: product._id,
+        quantity: item.quantity,
+        price: product.price,
+        notes: item.notes || '',
+        total: itemTotal
+      });
+    }
+
+    // 3. RECALCULATE TOTALS
+    const taxRate = req.user.branch.settings?.taxRate || 10;
+    const serviceChargeRate = req.user.branch.settings?.serviceCharge || 5;
+
+    const tax = subtotal * (taxRate / 100);
+    const serviceCharge = subtotal * (serviceChargeRate / 100);
+    const finalTotal = subtotal + tax + serviceCharge;
+
+    // 4. UPDATE ORDER
+    order.items = orderItems;
+    order.subtotal = subtotal;
+    order.tax = tax;
+    order.serviceCharge = serviceCharge;
+    order.finalTotal = finalTotal;
+    order.updatedAt = new Date();
+
+    if (notes) order.kitchenNotes = notes;
+
+    await order.save({ session });
+
+    // Populate for response
+    await order.populate([
+      { path: 'items.product', select: 'name category' },
+      { path: 'table', select: 'number name' },
+      { path: 'customer', select: 'name phone' },
+      { path: 'cashier', select: 'name' }
+    ]);
+
+    await session.commitTransaction();
+    session.endSession();
+
+    // Emit real-time events
+    if (req.io) {
+      req.io.to(`branch-${req.user.branch._id}`).emit('pos-order-updated', order);
+      req.io.to(`kitchen-${req.user.branch._id}`).emit('kitchen-order-updated', order);
+    }
+
+    res.json({
+      success: true,
+      message: 'Order updated successfully',
+      data: order
+    });
+
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    console.error('Update order error:', error);
+    res.status(400).json({
+      success: false,
+      message: error.message || 'Failed to update order'
+    });
+  }
+};
+
 // Get all orders
 export const getOrders = async (req, res) => {
   try {
