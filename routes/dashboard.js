@@ -10,9 +10,9 @@ import {
 
 const router = express.Router();
 
-router.get('/stats', auth, authorize('admin', 'manager', 'cashier'), getStats);
+router.get('/stats', auth, authorize('admin', 'manager', 'cashier', 'waiter'), getStats);
 router.get('/revenue', auth, authorize('admin', 'manager'), getRevenueData);
-router.get('/top-products', auth, authorize('admin', 'manager'), getTopProducts);
-router.get('/recent-activity', auth, authorize('admin', 'manager'), getRecentActivity);
+router.get('/top-products', auth, authorize('admin', 'manager', 'cashier', 'waiter'), getTopProducts);
+router.get('/recent-activity', auth, authorize('admin', 'manager', 'cashier', 'waiter'), getRecentActivity);
 
 export default router;

@@ -17,6 +17,7 @@ const orderItemSchema = new mongoose.Schema({
     min: 0
   },
   notes: String,
+  modifiers: [String],
   total: {
     type: Number,
     required: true
@@ -37,12 +38,12 @@ const orderSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['pending', 'confirmed', 'preparing', 'ready', 'served', 'completed', 'cancelled'],
+    enum: ['pending', 'confirmed', 'preparing', 'ready', 'served', 'completed', 'cancelled', 'delayed'],
     default: 'pending'
   },
   kitchenStatus: {
     type: String,
-    enum: ['pending', 'preparing', 'ready', 'served'],
+    enum: ['pending', 'preparing', 'ready', 'served', 'delayed'],
     default: 'pending'
   },
   customer: {
@@ -79,6 +80,11 @@ const orderSchema = new mongoose.Schema({
   finalTotal: {
     type: Number,
     required: true,
+    min: 0
+  },
+  tip: {
+    type: Number,
+    default: 0,
     min: 0
   },
   paymentMethod: {
@@ -121,7 +127,7 @@ orderSchema.pre('save', function (next) {
   this.subtotal = this.items.reduce((sum, item) => sum + item.total, 0);
 
   // Calculate final total
-  this.finalTotal = this.subtotal + this.tax + this.serviceCharge - this.discount;
+  this.finalTotal = this.subtotal + this.tax + this.serviceCharge - this.discount + (this.tip || 0);
 
   next();
 });

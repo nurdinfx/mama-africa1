@@ -74,7 +74,7 @@ app.use(cors({
   origin: function (origin, callback) {
     // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
-    
+
     if (allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
     } else {
@@ -95,11 +95,24 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Ensure uploads directory exists
-const uploadsDir = path.join(__dirname, 'uploads');
+// Use a persistent path outside the project directory to prevent data loss on updates
+const homeDir = process.env.HOME || process.env.USERPROFILE;
+const storageBaseDir = path.join(homeDir, 'mama-africa-storage');
+const uploadsDir = path.join(storageBaseDir, 'uploads');
 const productImagesDir = path.join(uploadsDir, 'products');
+
+// Create directories if they don't exist
+if (!fs.existsSync(storageBaseDir)) {
+  fs.mkdirSync(storageBaseDir, { recursive: true });
+}
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
 if (!fs.existsSync(productImagesDir)) {
   fs.mkdirSync(productImagesDir, { recursive: true });
-  console.log('✅ Created uploads directories');
+  console.log('✅ Created persistent upload directories at:', uploadsDir);
+} else {
+  console.log('✅ Using persistent upload directories at:', uploadsDir);
 }
 
 // Serve uploaded files statically
@@ -182,7 +195,7 @@ app.post('/api/v1/upload', upload.single('image'), async (req, res) => {
       });
 
       // Remove local temp file after uploading to Cloudinary
-      fs.unlink(req.file.path, () => {});
+      fs.unlink(req.file.path, () => { });
 
       imageData = {
         url: uploadResult.secure_url,
@@ -337,11 +350,11 @@ const healthHandler = (req, res) => {
     uploads: {
       directory: uploadsDir,
       exists: fs.existsSync(uploadsDir),
-      productImages: fs.existsSync(productImagesDir) ? 
+      productImages: fs.existsSync(productImagesDir) ?
         fs.readdirSync(productImagesDir).length : 0
     }
   };
-  
+
   res.json(health);
 };
 
@@ -376,7 +389,7 @@ app.get('/', (req, res) => {
 app.get('/uploads/products/:filename', (req, res) => {
   const filename = req.params.filename;
   const filePath = path.join(productImagesDir, filename);
-  
+
   if (fs.existsSync(filePath)) {
     // Set caching headers for images
     res.setHeader('Cache-Control', 'public, max-age=86400');
@@ -582,7 +595,7 @@ app.use((err, req, res, next) => {
   console.error('❌ Error Stack:', err.stack);
   console.error('❌ Error Details:', err);
   console.error('🕒 Error time:', new Date().toISOString());
-  
+
   // Multer errors
   if (err.code === 'LIMIT_FILE_SIZE') {
     return res.status(400).json({
@@ -591,7 +604,7 @@ app.use((err, req, res, next) => {
       timestamp: new Date().toISOString()
     });
   }
-  
+
   if (err.code === 'LIMIT_UNEXPECTED_FILE') {
     return res.status(400).json({
       success: false,
@@ -599,7 +612,7 @@ app.use((err, req, res, next) => {
       timestamp: new Date().toISOString()
     });
   }
-  
+
   if (err.name === 'ValidationError') {
     return res.status(400).json({
       success: false,
@@ -608,7 +621,7 @@ app.use((err, req, res, next) => {
       timestamp: new Date().toISOString()
     });
   }
-  
+
   if (err.name === 'CastError') {
     return res.status(400).json({
       success: false,
@@ -616,7 +629,7 @@ app.use((err, req, res, next) => {
       timestamp: new Date().toISOString()
     });
   }
-  
+
   if (err.code === 11000) {
     const field = Object.keys(err.keyValue)[0];
     return res.status(400).json({
@@ -636,7 +649,7 @@ app.use((err, req, res, next) => {
 
 // 404 handler
 app.use('*', (req, res) => {
-  res.status(404).json({ 
+  res.status(404).json({
     success: false,
     message: 'Route not found',
     path: req.originalUrl,
@@ -683,7 +696,7 @@ const connectDB = async () => {
 
     console.log('✅ Connected to MongoDB successfully:', conn.connection.host);
     console.log('🕒 Database connection time:', new Date().toISOString());
-    
+
     return conn;
   } catch (error) {
     console.error('❌ MongoDB connection error:', error);
@@ -698,7 +711,7 @@ const startServer = async () => {
   try {
     // First, connect to MongoDB
     await connectDB();
-    
+
     // Then start the server
     server.listen(PORT, () => {
       console.log(`🚀 Server running on port ${PORT}`);
@@ -714,7 +727,7 @@ const startServer = async () => {
       console.log('📋 Purchase orders: ✅ ACTIVE');
       console.log('🏢 Supplier management: ✅ ACTIVE');
     });
-    
+
     // Handle server errors
     server.on('error', (error) => {
       if (error.code === 'EADDRINUSE') {
@@ -731,7 +744,7 @@ const startServer = async () => {
         process.exit(1);
       }
     });
-    
+
   } catch (error) {
     console.error('❌ Failed to start server:', error.message);
     process.exit(1);
@@ -742,12 +755,12 @@ const startServer = async () => {
 process.on('SIGINT', async () => {
   console.log('\n🛑 Shutting down server gracefully...');
   console.log('🕒 Shutdown initiated at:', new Date().toISOString());
-  
+
   // Close server first
   server.close(() => {
     console.log('✅ HTTP server closed.');
   });
-  
+
   // Then close MongoDB connection
   await mongoose.connection.close();
   console.log('✅ MongoDB connection closed.');

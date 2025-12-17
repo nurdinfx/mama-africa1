@@ -40,7 +40,7 @@ const DEMO_ACCOUNTS = [
 // Generate token for real users
 const generateToken = (userId) => {
   return jwt.sign({ id: userId }, process.env.JWT_SECRET || 'restaurant-secret-key-2024', {
-    expiresIn: '30d'
+    expiresIn: '2h'
   });
 };
 
@@ -58,7 +58,7 @@ const getDemoAccount = (email) => {
 export const login = async (req, res) => {
   try {
     console.log('📥 Login request body:', req.body);
-    
+
     // Support both email and username fields
     const { email, username, password } = req.body;
     const loginIdentifier = email || username;
@@ -81,7 +81,7 @@ export const login = async (req, res) => {
     const demoAccount = getDemoAccount(loginIdentifier);
     if (demoAccount) {
       console.log('🔐 Demo account detected:', loginIdentifier);
-      
+
       if (demoAccount.password !== password) {
         return res.status(401).json({
           success: false,
@@ -111,8 +111,8 @@ export const login = async (req, res) => {
       }
 
       // Check if demo user exists, if not create one
-      user = await User.findOne({ 
-        $or: [{ email: loginIdentifier }, { username: loginIdentifier }] 
+      user = await User.findOne({
+        $or: [{ email: loginIdentifier }, { username: loginIdentifier }]
       }).populate('branch');
       if (!user) {
         user = new User({
@@ -170,8 +170,8 @@ export const login = async (req, res) => {
     } else {
       // Real account login - search by email or username
       console.log('🔐 Real account login attempt:', loginIdentifier);
-      user = await User.findOne({ 
-        $or: [{ email: loginIdentifier }, { username: loginIdentifier }] 
+      user = await User.findOne({
+        $or: [{ email: loginIdentifier }, { username: loginIdentifier }]
       }).populate('branch');
       if (!user) {
         return res.status(401).json({
@@ -280,7 +280,7 @@ export const register = async (req, res) => {
     }
 
     // Check if user already exists
-    const existingUser = await User.findOne({ 
+    const existingUser = await User.findOne({
       $or: [
         ...(email ? [{ email }] : []),
         ...(username ? [{ username }] : [])

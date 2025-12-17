@@ -15,10 +15,10 @@ import {
 const router = express.Router();
 
 // All routes are protected and require authentication
-router.get('/', auth, authorize('admin', 'manager', 'cashier', 'chef'), getProducts);
-router.get('/categories', auth, authorize('admin', 'manager', 'cashier'), getCategories);
+router.get('/', auth, authorize('admin', 'manager', 'cashier', 'chef', 'waiter'), getProducts);
+router.get('/categories', auth, authorize('admin', 'manager', 'cashier', 'waiter'), getCategories);
 router.get('/low-stock', auth, authorize('admin', 'manager'), getLowStockProducts);
-router.get('/:id', auth, authorize('admin', 'manager', 'cashier'), getProduct);
+router.get('/:id', auth, authorize('admin', 'manager', 'cashier', 'waiter'), getProduct);
 router.post('/', auth, authorize('admin', 'manager'), createProduct);
 router.put('/:id', auth, authorize('admin', 'manager'), updateProduct);
 router.delete('/:id', auth, authorize('admin'), deleteProduct);

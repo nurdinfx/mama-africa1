@@ -13,12 +13,12 @@ import {
 
 const router = express.Router();
 
-router.get('/', auth, authorize('admin', 'manager', 'cashier'), getTables);
-router.get('/available', auth, authorize('admin', 'manager', 'cashier'), getAvailableTables);
-router.get('/:id', auth, authorize('admin', 'manager', 'cashier'), getTable);
+router.get('/', auth, authorize('admin', 'manager', 'cashier', 'waiter'), getTables);
+router.get('/available', auth, authorize('admin', 'manager', 'cashier', 'waiter'), getAvailableTables);
+router.get('/:id', auth, authorize('admin', 'manager', 'cashier', 'waiter'), getTable);
 router.post('/', auth, authorize('admin', 'manager'), createTable);
 router.put('/:id', auth, authorize('admin', 'manager'), updateTable);
-router.patch('/:id/status', auth, authorize('admin', 'manager', 'cashier'), updateTableStatus);
+router.patch('/:id/status', auth, authorize('admin', 'manager', 'cashier', 'waiter'), updateTableStatus);
 router.delete('/:id', auth, authorize('admin'), deleteTable);
 
 export default router;

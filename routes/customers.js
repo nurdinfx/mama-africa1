@@ -15,7 +15,7 @@ import {
 
 const router = express.Router();
 
-router.get('/', auth, authorize('admin', 'manager', 'cashier'), getCustomers);
+router.get('/', auth, authorize('admin', 'manager', 'cashier', 'waiter'), getCustomers);
 router.get('/search', auth, authorize('admin', 'manager', 'cashier'), searchCustomers);
 router.get('/:id', auth, authorize('admin', 'manager', 'cashier'), getCustomer);
 router.get('/:id/ledger', auth, authorize('admin', 'manager', 'cashier'), getCustomerLedger);
