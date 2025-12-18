@@ -96,23 +96,30 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Ensure uploads directory exists
 // Use a persistent path outside the project directory to prevent data loss on updates
+// On Render, set PERSISTENT_STORAGE_PATH en var to the mount point (e.g. /var/data/ or /opt/render/project/.data) or use Cloudinary
 const homeDir = process.env.HOME || process.env.USERPROFILE;
-const storageBaseDir = path.join(homeDir, 'mama-africa-storage');
+const baseStart = process.env.PERSISTENT_STORAGE_PATH || homeDir;
+const storageBaseDir = process.env.PERSISTENT_STORAGE_PATH ? baseStart : path.join(baseStart, 'mama-africa-storage');
 const uploadsDir = path.join(storageBaseDir, 'uploads');
 const productImagesDir = path.join(uploadsDir, 'products');
 
 // Create directories if they don't exist
-if (!fs.existsSync(storageBaseDir)) {
-  fs.mkdirSync(storageBaseDir, { recursive: true });
-}
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
-}
-if (!fs.existsSync(productImagesDir)) {
-  fs.mkdirSync(productImagesDir, { recursive: true });
-  console.log('✅ Created persistent upload directories at:', uploadsDir);
-} else {
-  console.log('✅ Using persistent upload directories at:', uploadsDir);
+try {
+  if (!fs.existsSync(storageBaseDir)) {
+    fs.mkdirSync(storageBaseDir, { recursive: true });
+  }
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+  }
+  if (!fs.existsSync(productImagesDir)) {
+    fs.mkdirSync(productImagesDir, { recursive: true });
+    console.log('✅ Created persistent upload directories at:', uploadsDir);
+  } else {
+    console.log('✅ Using persistent upload directories at:', uploadsDir);
+  }
+} catch (err) {
+  console.error('❌ Failed to create upload directories:', err);
+  console.log('ℹ️ Falling back to local temp storage');
 }
 
 // Serve uploaded files statically
