@@ -11,7 +11,7 @@ export const createOrder = async (req, res) => {
   session.startTransaction();
 
   try {
-    const { items, orderType, tableId, customerId, customerName, customerPhone, notes, paymentMethod } = req.body;
+    const { items, orderType, tableId, customerId, customerName, customerPhone, notes, paymentMethod, tax: providedTax, finalTotal: providedTotal } = req.body;
 
     if (!items || !Array.isArray(items) || items.length === 0) {
       await session.abortTransaction();
@@ -76,12 +76,12 @@ export const createOrder = async (req, res) => {
     }
 
     // Calculate totals
-    const taxRate = req.user.branch.settings?.taxRate || 10;
+    const taxRate = req.user.branch.settings?.taxRate || 4;
     const serviceChargeRate = req.user.branch.settings?.serviceCharge || 5;
 
-    const tax = subtotal * (taxRate / 100);
+    const tax = providedTax !== undefined ? providedTax : (subtotal * (taxRate / 100));
     const serviceCharge = subtotal * (serviceChargeRate / 100);
-    const finalTotal = subtotal + tax + serviceCharge;
+    const finalTotal = providedTotal !== undefined ? providedTotal : (subtotal + tax + serviceCharge);
 
     // Handle customer
     let customer = null;
@@ -209,7 +209,7 @@ export const updateOrder = async (req, res) => {
 
   try {
     const { id } = req.params;
-    const { items, notes } = req.body;
+    const { items, notes, tax: providedTax, finalTotal: providedTotal } = req.body;
 
     // fetch existing order
     const order = await Order.findOne({ _id: id, branch: req.user.branch._id }).session(session);
@@ -280,12 +280,12 @@ export const updateOrder = async (req, res) => {
     }
 
     // 3. RECALCULATE TOTALS
-    const taxRate = req.user.branch.settings?.taxRate || 10;
+    const taxRate = req.user.branch.settings?.taxRate || 4;
     const serviceChargeRate = req.user.branch.settings?.serviceCharge || 5;
 
-    const tax = subtotal * (taxRate / 100);
+    const tax = providedTax !== undefined ? providedTax : (subtotal * (taxRate / 100));
     const serviceCharge = subtotal * (serviceChargeRate / 100);
-    const finalTotal = subtotal + tax + serviceCharge;
+    const finalTotal = providedTotal !== undefined ? providedTotal : (subtotal + tax + serviceCharge);
 
     // 4. UPDATE ORDER
     order.items = orderItems;
