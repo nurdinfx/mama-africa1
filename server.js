@@ -152,6 +152,7 @@ import supplierRoutes from './routes/suppliers.js';
 import financeRoutes from './routes/finance.js';
 import reportRoutes from './routes/reports.js';
 import inventoryRoutes from './routes/inventory.js';
+import syncRoutes from './routes/sync.js';
 
 // Simple File Upload Setup (without sharp)
 import multer from 'multer';
@@ -345,6 +346,8 @@ app.use('/api/v1/suppliers', supplierRoutes);
 app.use('/api/v1/finance', financeRoutes);
 app.use('/api/v1/reports', reportRoutes);
 app.use('/api/v1/inventory', inventoryRoutes);
+// Batch sync endpoint for offline clients
+app.use('/api/v1/sync', syncRoutes);
 
 // Health check endpoints (both /api/health and /api/v1/health)
 const healthHandler = (req, res) => {
