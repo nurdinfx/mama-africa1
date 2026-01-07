@@ -1,7 +1,7 @@
-import User from '../models/User.js';
-import Branch from '../models/Branch.js';
+// SQLite-only authentication controller
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
+import { db } from '../db/index.js';
 
 // Demo accounts data
 const DEMO_ACCOUNTS = [
@@ -37,211 +37,11 @@ const DEMO_ACCOUNTS = [
   }
 ];
 
-// Generate token for real users
+// Generate token
 const generateToken = (userId) => {
   return jwt.sign({ id: userId }, process.env.JWT_SECRET || 'restaurant-secret-key-2024', {
     expiresIn: '2h'
   });
-};
-
-// Check if email is a demo account
-const isDemoAccount = (email) => {
-  return DEMO_ACCOUNTS.some(account => account.email === email);
-};
-
-// Get demo account by email
-const getDemoAccount = (email) => {
-  return DEMO_ACCOUNTS.find(account => account.email === email);
-};
-
-// Simple login - supports both email and username
-export const login = async (req, res) => {
-  try {
-    console.log('📥 Login request body:', req.body);
-
-    // Support both email and username fields
-    const { email, username, password } = req.body;
-    const loginIdentifier = email || username;
-
-    console.log('Login attempt with:', loginIdentifier);
-
-    // Basic validation
-    if (!loginIdentifier || !password) {
-      console.log('❌ Validation failed - identifier:', loginIdentifier, 'password:', password ? 'provided' : 'missing');
-      return res.status(400).json({
-        success: false,
-        message: 'Email/Username and password are required'
-      });
-    }
-
-    let user;
-    let branch;
-
-    // Check if it's a demo account
-    const demoAccount = getDemoAccount(loginIdentifier);
-    if (demoAccount) {
-      console.log('🔐 Demo account detected:', loginIdentifier);
-
-      if (demoAccount.password !== password) {
-        return res.status(401).json({
-          success: false,
-          message: 'Invalid demo credentials'
-        });
-      }
-
-      // Create or get demo branch
-      branch = await Branch.findOne({ branchCode: 'DEMO' });
-      if (!branch) {
-        branch = new Branch({
-          name: 'Demo Restaurant',
-          branchCode: 'DEMO',
-          address: '123 Demo Street, Demo City',
-          phone: '+1 (555) 123-DEMO',
-          email: 'demo@restaurant.com',
-          settings: {
-            taxRate: 10,
-            serviceCharge: 5,
-            currency: 'USD',
-            timezone: 'UTC'
-          },
-          createdAt: new Date(),
-          updatedAt: new Date()
-        });
-        await branch.save();
-      }
-
-      // Check if demo user exists, if not create one
-      user = await User.findOne({
-        $or: [{ email: loginIdentifier }, { username: loginIdentifier }]
-      }).populate('branch');
-      if (!user) {
-        user = new User({
-          name: demoAccount.name,
-          email: demoAccount.email,
-          password: await bcrypt.hash(demoAccount.password, 10),
-          role: demoAccount.role,
-          branch: branch._id,
-          isDemo: true,
-          isActive: true,
-          lastLogin: new Date(),
-          createdAt: new Date(),
-          updatedAt: new Date()
-        });
-        await user.save();
-        await user.populate('branch');
-      } else {
-        // Update last login for existing demo user
-        user.lastLogin = new Date();
-        await user.save();
-      }
-
-      // For demo accounts, use simple token format with timestamp
-      const token = `demo-${user.role}-${Date.now()}`;
-
-      const userData = {
-        id: user._id,
-        _id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        isDemo: true,
-        permissions: getPermissionsByRole(user.role),
-        branch: {
-          _id: branch._id,
-          name: branch.name,
-          branchCode: branch.branchCode,
-          settings: branch.settings
-        },
-        createdAt: user.createdAt,
-        lastLogin: user.lastLogin
-      };
-
-      console.log('✅ Demo login successful for:', user.email);
-
-      return res.json({
-        success: true,
-        message: 'Demo login successful',
-        data: {
-          token,
-          user: userData
-        }
-      });
-
-    } else {
-      // Real account login - search by email or username
-      console.log('🔐 Real account login attempt:', loginIdentifier);
-      user = await User.findOne({
-        $or: [{ email: loginIdentifier }, { username: loginIdentifier }]
-      }).populate('branch');
-      if (!user) {
-        return res.status(401).json({
-          success: false,
-          message: 'Invalid email/username or password'
-        });
-      }
-
-      // Check password
-      const isPasswordValid = await bcrypt.compare(password, user.password);
-      if (!isPasswordValid) {
-        return res.status(401).json({
-          success: false,
-          message: 'Invalid email/username or password'
-        });
-      }
-
-      if (!user.isActive) {
-        return res.status(401).json({
-          success: false,
-          message: 'Account is deactivated'
-        });
-      }
-
-      branch = user.branch;
-
-      // Generate JWT token for real users
-      const token = generateToken(user._id);
-
-      // Update last login
-      user.lastLogin = new Date();
-      await user.save();
-
-      const userData = {
-        id: user._id,
-        _id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        isDemo: false,
-        permissions: getPermissionsByRole(user.role),
-        branch: {
-          _id: branch._id,
-          name: branch.name,
-          branchCode: branch.branchCode,
-          settings: branch.settings
-        },
-        createdAt: user.createdAt,
-        lastLogin: user.lastLogin
-      };
-
-      console.log('✅ Real login successful for:', user.email);
-
-      return res.json({
-        success: true,
-        message: 'Login successful',
-        data: {
-          token,
-          user: userData
-        }
-      });
-    }
-
-  } catch (error) {
-    console.error('Login error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Server error during login'
-    });
-  }
 };
 
 // Helper function to get permissions by role
@@ -256,14 +56,237 @@ const getPermissionsByRole = (role) => {
   return permissions[role] || ['read'];
 };
 
-// Simple registration for real accounts
+// Get or create demo branch
+const getOrCreateDemoBranch = () => {
+  let branch = db.prepare('SELECT * FROM branches WHERE branchCode = ?').get('DEMO');
+  
+  if (!branch) {
+    const settings = JSON.stringify({
+      taxRate: 10,
+      serviceCharge: 5,
+      currency: 'USD',
+      timezone: 'UTC'
+    });
+    
+    const result = db.prepare(`
+      INSERT INTO branches (name, branchCode, address, phone, email, settings, isActive)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      'Demo Restaurant',
+      'DEMO',
+      '123 Demo Street, Demo City',
+      '+1 (555) 123-DEMO',
+      'demo@restaurant.com',
+      settings,
+      1
+    );
+    
+    branch = db.prepare('SELECT * FROM branches WHERE id = ?').get(result.lastInsertRowid);
+  }
+  
+  // Parse settings JSON
+  if (branch.settings) {
+    try {
+      branch.settings = JSON.parse(branch.settings);
+    } catch (e) {
+      branch.settings = { taxRate: 10, serviceCharge: 5, currency: 'USD', timezone: 'UTC' };
+    }
+  }
+  
+  return branch;
+};
+
+// Get or create demo user
+const getOrCreateDemoUser = (demoAccount, branchId) => {
+  let user = db.prepare('SELECT * FROM users WHERE email = ? OR username = ?').get(demoAccount.email, demoAccount.email);
+  
+  if (!user) {
+    const hashedPassword = bcrypt.hashSync(demoAccount.password, 10);
+    const result = db.prepare(`
+      INSERT INTO users (name, email, username, password, role, branch, isActive)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      demoAccount.name,
+      demoAccount.email,
+      demoAccount.email,
+      hashedPassword,
+      demoAccount.role,
+      branchId.toString(),
+      1
+    );
+    
+    user = db.prepare('SELECT * FROM users WHERE id = ?').get(result.lastInsertRowid);
+  } else {
+    // Update last login
+    db.prepare('UPDATE users SET updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(user.id);
+  }
+  
+  return user;
+};
+
+// Login - SQLite only
+export const login = async (req, res) => {
+  try {
+    console.log('📥 Login request body:', req.body);
+
+    const { email, username, password } = req.body;
+    const loginIdentifier = email || username;
+
+    if (!loginIdentifier || !password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email/Username and password are required'
+      });
+    }
+
+    // Check if demo account
+    const demoAccount = DEMO_ACCOUNTS.find(acc => acc.email === loginIdentifier);
+    
+    if (demoAccount) {
+      console.log('🔐 Demo account detected:', loginIdentifier);
+
+      if (demoAccount.password !== password) {
+        return res.status(401).json({
+          success: false,
+          message: 'Invalid demo credentials'
+        });
+      }
+
+      // Get or create demo branch
+      const branch = getOrCreateDemoBranch();
+      
+      // Get or create demo user
+      const user = getOrCreateDemoUser(demoAccount, branch.id);
+
+      const token = `demo-${user.role}-${Date.now()}`;
+
+      const userData = {
+        id: user.id.toString(),
+        _id: user.id.toString(),
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        isDemo: true,
+        permissions: getPermissionsByRole(user.role),
+        branch: {
+          _id: branch.id.toString(),
+          name: branch.name,
+          branchCode: branch.branchCode,
+          settings: branch.settings
+        },
+        createdAt: user.updated_at,
+        lastLogin: new Date().toISOString()
+      };
+
+      console.log('✅ Demo login successful for:', user.email);
+
+      return res.json({
+        success: true,
+        message: 'Demo login successful',
+        data: {
+          token,
+          user: userData
+        }
+      });
+    }
+
+    // Real account login
+    console.log('🔐 Real account login attempt:', loginIdentifier);
+    const user = db.prepare('SELECT * FROM users WHERE email = ? OR username = ?').get(loginIdentifier, loginIdentifier);
+    
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email/username or password'
+      });
+    }
+
+    // Check password
+    const isPasswordValid = bcrypt.compareSync(password, user.password);
+    if (!isPasswordValid) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email/username or password'
+      });
+    }
+
+    if (!user.isActive) {
+      return res.status(401).json({
+        success: false,
+        message: 'Account is deactivated'
+      });
+    }
+
+    // Get branch
+    const branch = db.prepare('SELECT * FROM branches WHERE id = ?').get(user.branch);
+    if (!branch) {
+      return res.status(401).json({
+        success: false,
+        message: 'Branch not found'
+      });
+    }
+
+    // Parse branch settings
+    let branchSettings = {};
+    if (branch.settings) {
+      try {
+        branchSettings = JSON.parse(branch.settings);
+      } catch (e) {
+        branchSettings = { taxRate: 10, serviceCharge: 5, currency: 'USD', timezone: 'UTC' };
+      }
+    }
+
+    // Generate JWT token
+    const token = generateToken(user.id.toString());
+
+    // Update last login
+    db.prepare('UPDATE users SET updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(user.id);
+
+    const userData = {
+      id: user.id.toString(),
+      _id: user.id.toString(),
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      isDemo: false,
+      permissions: getPermissionsByRole(user.role),
+      branch: {
+        _id: branch.id.toString(),
+        name: branch.name,
+        branchCode: branch.branchCode,
+        settings: branchSettings
+      },
+      createdAt: user.updated_at,
+      lastLogin: new Date().toISOString()
+    };
+
+    console.log('✅ Real login successful for:', user.email);
+
+    return res.json({
+      success: true,
+      message: 'Login successful',
+      data: {
+        token,
+        user: userData
+      }
+    });
+
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error during login'
+    });
+  }
+};
+
+// Registration - SQLite only
 export const register = async (req, res) => {
   try {
     const { name, email, username, password, role, branchId } = req.body;
 
     console.log('Registration attempt:', email || username);
 
-    // Basic validation - require either email or username
     if (!name || (!email && !username) || !password) {
       return res.status(400).json({
         success: false,
@@ -271,21 +294,16 @@ export const register = async (req, res) => {
       });
     }
 
-    // Check if email is a demo account
-    if (email && isDemoAccount(email)) {
+    // Check if demo account
+    if (email && DEMO_ACCOUNTS.some(acc => acc.email === email)) {
       return res.status(400).json({
         success: false,
         message: 'Cannot register with demo account email'
       });
     }
 
-    // Check if user already exists
-    const existingUser = await User.findOne({
-      $or: [
-        ...(email ? [{ email }] : []),
-        ...(username ? [{ username }] : [])
-      ]
-    });
+    // Check if user exists
+    const existingUser = db.prepare('SELECT * FROM users WHERE email = ? OR username = ?').get(email || '', username || '');
     if (existingUser) {
       return res.status(400).json({
         success: false,
@@ -296,27 +314,31 @@ export const register = async (req, res) => {
     // Get or create branch
     let branch;
     if (branchId) {
-      branch = await Branch.findById(branchId);
+      branch = db.prepare('SELECT * FROM branches WHERE id = ?').get(branchId);
     } else {
-      // Create a default branch for new registrations
-      branch = await Branch.findOne({ branchCode: 'MAIN' });
+      branch = db.prepare('SELECT * FROM branches WHERE branchCode = ?').get('MAIN');
       if (!branch) {
-        branch = new Branch({
-          name: 'My Restaurant',
-          branchCode: 'MAIN',
-          address: 'Add your restaurant address',
-          phone: '+1 (555) 123-4567',
-          email: email,
-          settings: {
-            taxRate: 10,
-            serviceCharge: 5,
-            currency: 'USD',
-            timezone: 'UTC'
-          },
-          createdAt: new Date(),
-          updatedAt: new Date()
+        const settings = JSON.stringify({
+          taxRate: 10,
+          serviceCharge: 5,
+          currency: 'USD',
+          timezone: 'UTC'
         });
-        await branch.save();
+        
+        const result = db.prepare(`
+          INSERT INTO branches (name, branchCode, address, phone, email, settings, isActive)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          'My Restaurant',
+          'MAIN',
+          'Add your restaurant address',
+          '+1 (555) 123-4567',
+          email || `${username}@local.user`,
+          settings,
+          1
+        );
+        
+        branch = db.prepare('SELECT * FROM branches WHERE id = ?').get(result.lastInsertRowid);
       }
     }
 
@@ -328,42 +350,51 @@ export const register = async (req, res) => {
     }
 
     // Create user
-    const user = new User({
+    const hashedPassword = bcrypt.hashSync(password, 10);
+    const result = db.prepare(`
+      INSERT INTO users (name, email, username, password, role, branch, isActive)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
       name,
-      email: email || `${username}@local.user`,
+      email || `${username}@local.user`,
       username,
-      password: await bcrypt.hash(password, 10),
-      role: role || 'manager',
-      branch: branch._id,
-      isDemo: false,
-      isActive: true,
-      lastLogin: new Date(),
-      createdAt: new Date(),
-      updatedAt: new Date()
-    });
+      hashedPassword,
+      role || 'manager',
+      branch.id.toString(),
+      1
+    );
 
-    await user.save();
-    await user.populate('branch');
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(result.lastInsertRowid);
+
+    // Parse branch settings
+    let branchSettings = {};
+    if (branch.settings) {
+      try {
+        branchSettings = JSON.parse(branch.settings);
+      } catch (e) {
+        branchSettings = { taxRate: 10, serviceCharge: 5, currency: 'USD', timezone: 'UTC' };
+      }
+    }
 
     // Generate token
-    const token = generateToken(user._id);
+    const token = generateToken(user.id.toString());
 
     const userData = {
-      id: user._id,
-      _id: user._id,
+      id: user.id.toString(),
+      _id: user.id.toString(),
       name: user.name,
       email: user.email,
       role: user.role,
       isDemo: false,
       permissions: getPermissionsByRole(user.role),
       branch: {
-        _id: branch._id,
+        _id: branch.id.toString(),
         name: branch.name,
         branchCode: branch.branchCode,
-        settings: branch.settings
+        settings: branchSettings
       },
-      createdAt: user.createdAt,
-      lastLogin: user.lastLogin
+      createdAt: user.updated_at,
+      lastLogin: new Date().toISOString()
     };
 
     console.log('✅ Registration successful for:', user.email);
@@ -386,12 +417,11 @@ export const register = async (req, res) => {
   }
 };
 
-// Get current user
+// Get current user - SQLite only
 export const getMe = async (req, res) => {
   try {
-    const user = await User.findById(req.user.id)
-      .select('-password')
-      .populate('branch');
+    const userId = req.user.id;
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
 
     if (!user) {
       return res.status(404).json({
@@ -400,17 +430,41 @@ export const getMe = async (req, res) => {
       });
     }
 
+    // Get branch
+    const branch = db.prepare('SELECT * FROM branches WHERE id = ?').get(user.branch);
+    if (!branch) {
+      return res.status(404).json({
+        success: false,
+        message: 'Branch not found'
+      });
+    }
+
+    // Parse branch settings
+    let branchSettings = {};
+    if (branch.settings) {
+      try {
+        branchSettings = JSON.parse(branch.settings);
+      } catch (e) {
+        branchSettings = { taxRate: 10, serviceCharge: 5, currency: 'USD', timezone: 'UTC' };
+      }
+    }
+
     const userData = {
-      id: user._id,
-      _id: user._id,
+      id: user.id.toString(),
+      _id: user.id.toString(),
       name: user.name,
       email: user.email,
       role: user.role,
-      isDemo: user.isDemo || false,
+      isDemo: false,
       permissions: getPermissionsByRole(user.role),
-      branch: user.branch,
-      createdAt: user.createdAt,
-      lastLogin: user.lastLogin
+      branch: {
+        _id: branch.id.toString(),
+        name: branch.name,
+        branchCode: branch.branchCode,
+        settings: branchSettings
+      },
+      createdAt: user.updated_at,
+      lastLogin: new Date().toISOString()
     };
 
     res.json({
@@ -427,9 +481,9 @@ export const getMe = async (req, res) => {
   }
 };
 
-// Simple logout
+// Logout
 export const logout = async (req, res) => {
-  console.log('🚪 Logout for user:', req.user.email);
+  console.log('🚪 Logout for user:', req.user?.email || req.user?.id);
   res.json({
     success: true,
     message: 'Logout successful'
@@ -449,7 +503,7 @@ export const getDemoAccounts = async (req, res) => {
   });
 };
 
-// Check if email exists
+// Check if email exists - SQLite only
 export const checkEmail = async (req, res) => {
   try {
     const { email } = req.query;
@@ -461,14 +515,14 @@ export const checkEmail = async (req, res) => {
       });
     }
 
-    const user = await User.findOne({ email });
+    const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
     const exists = !!user;
 
     res.json({
       success: true,
       data: {
         exists,
-        isDemo: isDemoAccount(email)
+        isDemo: DEMO_ACCOUNTS.some(acc => acc.email === email)
       }
     });
 

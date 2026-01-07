@@ -1,6 +1,5 @@
 // backend/server.js
 import express from 'express';
-import mongoose from 'mongoose';
 import cors from 'cors';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
@@ -9,6 +8,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import { v2 as cloudinary } from 'cloudinary';
+import { licenseCheck } from './middleware/licenseCheck.js';
+import { initDatabase } from './db/index.js';
 
 // Fix for __dirname in ES modules
 const __filename = fileURLToPath(import.meta.url);
@@ -349,13 +350,20 @@ app.use('/api/v1/inventory', inventoryRoutes);
 // Batch sync endpoint for offline clients
 app.use('/api/v1/sync', syncRoutes);
 
+import licenseRoutes from './routes/license.js';
+app.use('/api/v1/license', licenseRoutes);
+
+// Protect all other routes with license check
+// Excluding health and license routes themselves
+app.use(['/api/v1/orders', '/api/v1/products', '/api/v1/customers', '/api/v1/tables', '/api/v1/expenses', '/api/v1/dashboard', '/api/v1/users', '/api/v1/settings', '/api/v1/purchases', '/api/v1/purchase-orders', '/api/v1/suppliers', '/api/v1/finance', '/api/v1/reports', '/api/v1/inventory'], licenseCheck);
+
 // Health check endpoints (both /api/health and /api/v1/health)
 const healthHandler = (req, res) => {
   const health = {
     status: 'OK',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
-    database: mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected',
+    database: 'Connected (SQLite)',
     environment: process.env.NODE_ENV || 'development',
     uploads: {
       directory: uploadsDir,
@@ -374,7 +382,7 @@ app.get('/api/v1/health', healthHandler);
 // Root endpoint
 app.get('/', (req, res) => {
   res.json({
-    message: 'Mama Africa Restaurant Management API',
+    message: 'HUDI-SOFT Management API',
     version: '1.0.0',
     timestamp: new Date().toISOString(),
     endpoints: {
@@ -667,62 +675,14 @@ app.use('*', (req, res) => {
   });
 });
 
-// Database connection
-const connectDB = async () => {
-  const primaryUri = process.env.MONGODB_URI;
-  const fallbackUri = 'mongodb://127.0.0.1:27017/mama_africa';
-  let lastError = null;
-
-  const tryConnect = async (uri, label) => {
-    console.log(`🔌 Attempting MongoDB connection (${label}):`, uri);
-    const conn = await mongoose.connect(uri, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-      serverSelectionTimeoutMS: 8000,
-      family: 4
-    });
-    return conn;
-  };
-
-  try {
-    let conn = null;
-    if (primaryUri) {
-      try {
-        conn = await tryConnect(primaryUri, 'primary');
-      } catch (err) {
-        lastError = err;
-        const timeoutOrDns = err?.code === 'ETIMEOUT' || err?.code === 'ENOTFOUND' || err?.syscall === 'querySrv' || String(err?.message || '').toLowerCase().includes('srv');
-        if (timeoutOrDns) {
-          console.warn('⚠️ Primary MongoDB URI failed due to DNS/timeout. Falling back to local.');
-        } else {
-          console.warn('⚠️ Primary MongoDB connection failed. Falling back to local.', err);
-        }
-      }
-    }
-
-    if (!conn) {
-      conn = await tryConnect(fallbackUri, 'fallback-local');
-    }
-
-    console.log('✅ Connected to MongoDB successfully:', conn.connection.host);
-    console.log('🕒 Database connection time:', new Date().toISOString());
-
-    return conn;
-  } catch (error) {
-    console.error('❌ MongoDB connection error:', error);
-    if (lastError) console.error('❌ Primary connection error:', lastError);
-    console.error('🕒 Connection error time:', new Date().toISOString());
-    throw error; // Re-throw the error instead of exiting
-  }
-};
-
-// Function to start the server AFTER database connection
+// Function to start the server after database initialization
 const startServer = async () => {
   try {
-    // First, connect to MongoDB
-    await connectDB();
+    // Initialize SQLite database (fully offline)
+    await initDatabase();
+    console.log('🗄️  Database Mode: SQLITE (Fully Offline)');
 
-    // Then start the server
+    // Start the HTTP server
     server.listen(PORT, () => {
       console.log(`🚀 Server running on port ${PORT}`);
       console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
@@ -737,6 +697,8 @@ const startServer = async () => {
       console.log('📋 Purchase orders: ✅ ACTIVE');
       console.log('🏢 Supplier management: ✅ ACTIVE');
     });
+
+    // SQLite-only mode - no connectivity monitoring needed
 
     // Handle server errors
     server.on('error', (error) => {
@@ -763,19 +725,16 @@ const startServer = async () => {
 
 // Graceful shutdown
 process.on('SIGINT', async () => {
+  const now = new Date().toISOString();
   console.log('\n🛑 Shutting down server gracefully...');
-  console.log('🕒 Shutdown initiated at:', new Date().toISOString());
+  console.log('🕒 Shutdown initiated at:', now);
 
-  // Close server first
+  // Close server
   server.close(() => {
     console.log('✅ HTTP server closed.');
+    console.log('🕒 Shutdown completed at:', now);
+    process.exit(0);
   });
-
-  // Then close MongoDB connection
-  await mongoose.connection.close();
-  console.log('✅ MongoDB connection closed.');
-  console.log('🕒 Shutdown completed at:', new Date().toISOString());
-  process.exit(0);
 });
 
 // Handle uncaught exceptions

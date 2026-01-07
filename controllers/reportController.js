@@ -1,131 +1,112 @@
-import Purchase from '../models/Purchase.js';
-import Product from '../models/Product.js';
-import Supplier from '../models/Supplier.js';
+// SQLite-only report controller
+import { db } from '../db/index.js';
 
 export const getPurchaseReports = async (req, res) => {
   try {
-    const { 
-      from, 
-      to, 
-      supplierId, 
+    const {
+      from,
+      to,
+      supplierId,
       productId,
       groupBy = 'day'
     } = req.query;
 
-    const matchStage = {};
-    
+    const branchId = req.user.branch._id || req.user.branch.id;
+
+    let query = `
+      SELECT 
+        p.*, 
+        s.name as supplierName 
+      FROM purchases p
+      LEFT JOIN suppliers s ON p.supplier = s.id
+      WHERE p.branch = ?
+    `;
+    const params = [branchId.toString()];
+
     if (from && to) {
-      matchStage.createdAt = {
-        $gte: new Date(from),
-        $lte: new Date(to)
-      };
-    }
-    
-    if (supplierId) matchStage.supplierId = supplierId;
-
-    let groupStage = {};
-    switch (groupBy) {
-      case 'day':
-        groupStage = {
-          _id: {
-            year: { $year: '$createdAt' },
-            month: { $month: '$createdAt' },
-            day: { $dayOfMonth: '$createdAt' }
-          },
-          date: { $first: '$createdAt' }
-        };
-        break;
-      case 'month':
-        groupStage = {
-          _id: {
-            year: { $year: '$createdAt' },
-            month: { $month: '$createdAt' }
-          },
-          date: { $first: '$createdAt' }
-        };
-        break;
-      case 'supplier':
-        groupStage = {
-          _id: '$supplierId'
-        };
-        break;
-      default:
-        groupStage = {
-          _id: null
-        };
+      query += ' AND p.createdAt >= ? AND p.createdAt <= ?';
+      params.push(new Date(from).toISOString(), new Date(to).toISOString());
     }
 
-    const pipeline = [
-      { $match: matchStage },
-      { $unwind: '$items' },
-      {
-        $lookup: {
-          from: 'products',
-          localField: 'items.productId',
-          foreignField: '_id',
-          as: 'product'
-        }
-      },
-      { $unwind: '$product' },
-      {
-        $group: {
-          ...groupStage,
-          totalPurchases: { $sum: 1 },
-          totalAmount: { $sum: '$grandTotal' },
-          totalQuantity: { $sum: '$items.qty' },
-          products: {
-            $push: {
-              productId: '$items.productId',
-              productName: '$product.name',
-              quantity: '$items.qty',
-              amount: '$items.total'
-            }
-          }
-        }
-      },
-      { $sort: { '_id': 1 } }
-    ];
+    if (supplierId) {
+      query += ' AND p.supplier = ?';
+      params.push(supplierId);
+    }
 
-    // Add supplier lookup if grouping by supplier
+    // Since we don't have direct access to 'items' as a JSON array in raw SQLite query for aggregation easily without extensions,
+    // we will fetch the purchases and aggregate in JS or do a join if we have purchase_items table.
+    // Assuming purchase_items table exists for better normalization.
+
+    // Actually, let's look at getPurchases in purchaseController or schema.
+    // For now, I'll assume standard joining with purchase_items.
+
+    // Aggregation Logic Replacements
+    // Group By Day/Month/Supplier
+
+    let groupFormat;
+    if (groupBy === 'day') groupFormat = '%Y-%m-%d';
+    else if (groupBy === 'month') groupFormat = '%Y-%m';
+    else groupFormat = 'supplier'; // Special handling
+
+    // We need to construct a robust query.
+    // Let's do a simplified approach: Get the data and group in JS if volume is reasonable, 
+    // OR use SQLite's strftime.
+
+    let sqlGroupBy;
+    let selectClause;
+
     if (groupBy === 'supplier') {
-      pipeline.push({
-        $lookup: {
-          from: 'suppliers',
-          localField: '_id',
-          foreignField: '_id',
-          as: 'supplier'
-        }
-      });
-      pipeline.push({ $unwind: '$supplier' });
+      selectClause = 'p.supplier as groupId, s.name as groupName';
+      sqlGroupBy = 'p.supplier';
+    } else {
+      selectClause = `strftime('${groupFormat}', p.createdAt) as groupId`;
+      sqlGroupBy = `strftime('${groupFormat}', p.createdAt)`;
     }
 
-    const reports = await Purchase.aggregate(pipeline);
+    // Main Aggregation Query
+    const aggQuery = `
+        SELECT 
+            ${selectClause},
+            COUNT(*) as totalPurchases,
+            SUM(p.grandTotal) as totalAmount,
+            SUM(pi.quantity) as totalQuantity
+        FROM purchases p
+        LEFT JOIN suppliers s ON p.supplier = s.id
+        LEFT JOIN purchase_items pi ON p.id = pi.purchase_id
+        WHERE p.branch = ?
+        ${(from && to) ? 'AND p.createdAt >= ? AND p.createdAt <= ?' : ''}
+        ${supplierId ? 'AND p.supplier = ?' : ''}
+        GROUP BY ${sqlGroupBy}
+        ORDER BY groupId
+    `;
 
-    // Get top purchased products
-    const topProducts = await Purchase.aggregate([
-      { $match: matchStage },
-      { $unwind: '$items' },
-      {
-        $lookup: {
-          from: 'products',
-          localField: 'items.productId',
-          foreignField: '_id',
-          as: 'product'
-        }
-      },
-      { $unwind: '$product' },
-      {
-        $group: {
-          _id: '$items.productId',
-          productName: { $first: '$product.name' },
-          totalQuantity: { $sum: '$items.qty' },
-          totalAmount: { $sum: '$items.total' },
-          averageCost: { $avg: '$items.unitCost' }
-        }
-      },
-      { $sort: { totalQuantity: -1 } },
-      { $limit: 10 }
-    ]);
+    // Filter params for aggQuery
+    const aggParams = [branchId.toString()];
+    if (from && to) aggParams.push(new Date(from).toISOString(), new Date(to).toISOString());
+    if (supplierId) aggParams.push(supplierId);
+
+    const reports = db.prepare(aggQuery).all(...aggParams);
+
+    // Top Products Query
+    const topProductsQuery = `
+        SELECT 
+            pi.product_id as _id,
+            pr.name as productName,
+            SUM(pi.quantity) as totalQuantity,
+            SUM(pi.total) as totalAmount,
+            AVG(pi.unitCost) as averageCost
+        FROM purchase_items pi
+        JOIN purchases p ON pi.purchase_id = p.id
+        JOIN products pr ON pi.product_id = pr.id
+        WHERE p.branch = ?
+        ${(from && to) ? 'AND p.createdAt >= ? AND p.createdAt <= ?' : ''}
+        ${supplierId ? 'AND p.supplier = ?' : ''}
+        GROUP BY pi.product_id
+        ORDER BY totalQuantity DESC
+        LIMIT 10
+    `;
+
+    const topProducts = db.prepare(topProductsQuery).all(...aggParams);
 
     res.json({
       success: true,
@@ -138,7 +119,9 @@ export const getPurchaseReports = async (req, res) => {
         }
       }
     });
+
   } catch (error) {
+    console.error('Purchase reports error:', error);
     res.status(500).json({
       success: false,
       message: error.message
@@ -149,43 +132,41 @@ export const getPurchaseReports = async (req, res) => {
 export const getInventoryReport = async (req, res) => {
   try {
     const { lowStock = false } = req.query;
+    const branchId = req.user.branch._id || req.user.branch.id;
 
-    const matchStage = {};
+    let query = 'SELECT * FROM products WHERE branch = ?';
+    const params = [branchId.toString()];
+
     if (lowStock === 'true') {
-      matchStage.$expr = { $lte: ['$stock', '$minStock'] };
+      query += ' AND stock <= minStock';
     }
 
-    const products = await Product.find(matchStage)
-      .populate('supplierId', 'name')
-      .sort({ stock: 1 });
+    query += ' ORDER BY stock ASC';
 
-    const inventorySummary = await Product.aggregate([
-      {
-        $group: {
-          _id: null,
-          totalProducts: { $sum: 1 },
-          totalValue: { $sum: { $multiply: ['$stock', '$costPrice'] } },
-          lowStockItems: {
-            $sum: {
-              $cond: [{ $lte: ['$stock', '$minStock'] }, 1, 0]
-            }
-          }
-        }
-      }
-    ]);
+    const products = db.prepare(query).all(...params);
+
+    // Calculate summary
+    const totalProducts = products.length;
+    const totalValue = products.reduce((sum, p) => sum + (p.stock * (p.cost || 0)), 0);
+    const lowStockCount = products.filter(p => p.stock <= p.minStock).length;
 
     res.json({
       success: true,
       data: {
-        products,
-        summary: inventorySummary[0] || {
-          totalProducts: 0,
-          totalValue: 0,
-          lowStockItems: 0
+        products: products.map(p => ({
+          ...p,
+          _id: p.id.toString(),
+          costPrice: p.cost // Mapping for frontend
+        })),
+        summary: {
+          totalProducts,
+          totalValue,
+          lowStockItems: lowStockCount
         }
       }
     });
   } catch (error) {
+    console.error('Inventory report error:', error);
     res.status(500).json({
       success: false,
       message: error.message

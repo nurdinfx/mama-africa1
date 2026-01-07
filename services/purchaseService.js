@@ -1,4 +1,5 @@
-import Product from '../models/Product.js';
+// SQLite-only purchase service
+import { db } from '../db/index.js';
 
 export const validatePurchaseItems = async (items) => {
   const validatedItems = [];
@@ -7,7 +8,7 @@ export const validatePurchaseItems = async (items) => {
   for (const [index, item] of items.entries()) {
     try {
       // Validate product exists
-      const product = await Product.findById(item.productId);
+      const product = db.prepare('SELECT * FROM products WHERE id = ?').get(item.productId);
       if (!product) {
         errors.push(`Product with ID ${item.productId} not found`);
         continue;
@@ -21,10 +22,10 @@ export const validatePurchaseItems = async (items) => {
         errors.push('Unit cost must be greater than 0');
       }
 
-      const itemTotal = (item.qty * item.unitCost) * 
-                       (1 - (item.discount || 0) / 100) * 
-                       (1 + (item.tax || 0) / 100);
-      
+      const itemTotal = (item.qty * item.unitCost) *
+        (1 - (item.discount || 0) / 100) *
+        (1 + (item.tax || 0) / 100);
+
       validatedItems.push({
         ...item,
         total: Math.round(itemTotal * 100) / 100
@@ -43,11 +44,11 @@ export const validatePurchaseItems = async (items) => {
 
 export const calculatePurchaseTotals = async (items) => {
   const validatedItems = await validatePurchaseItems(items);
-  
+
   const subtotal = validatedItems.reduce((sum, item) => sum + (item.qty * item.unitCost), 0);
-  const discountTotal = validatedItems.reduce((sum, item) => 
+  const discountTotal = validatedItems.reduce((sum, item) =>
     sum + (item.qty * item.unitCost * (item.discount || 0) / 100), 0);
-  const taxTotal = validatedItems.reduce((sum, item) => 
+  const taxTotal = validatedItems.reduce((sum, item) =>
     sum + ((item.qty * item.unitCost * (1 - (item.discount || 0) / 100)) * (item.tax || 0) / 100), 0);
   const grandTotal = subtotal - discountTotal + taxTotal;
 
@@ -61,13 +62,8 @@ export const calculatePurchaseTotals = async (items) => {
 };
 
 export const updateInventory = async (items, session = null) => {
-  const updateOperations = items.map(item => ({
-    updateOne: {
-      filter: { _id: item.productId },
-      update: { $inc: { stock: item.qty } }
-    }
-  }));
-
-  const options = session ? { session } : {};
-  await Product.bulkWrite(updateOperations, options);
+  // Update stock using transaction if called within one, but here we run directly
+  for (const item of items) {
+    db.prepare('UPDATE products SET stock = stock + ? WHERE id = ?').run(item.qty, item.productId);
+  }
 };

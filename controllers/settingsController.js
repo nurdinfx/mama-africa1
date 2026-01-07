@@ -1,26 +1,50 @@
-import Branch from '../models/Branch.js';
-import Setting from '../models/Setting.js';
+// SQLite-only settings controller
+import { db } from '../db/index.js';
 import { v2 as cloudinary } from 'cloudinary';
 
 export const getBranchSettings = async (req, res) => {
   try {
     const { branchId } = req.params;
 
-    const branch = await Branch.findById(branchId);
+    const branch = db.prepare('SELECT * FROM branches WHERE id = ?').get(branchId);
     if (!branch) {
       return res.status(404).json({ success: false, message: 'Branch not found' });
     }
 
-    // Check if user has access to this branch
-    if (req.user.role !== 'admin' && req.user.branch._id.toString() !== branchId) {
+    // Check permissions
+    if (req.user.role !== 'admin' && (req.user.branch._id || req.user.branch.id).toString() !== branchId) {
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
 
-    // Get settings for this branch
-    const settings = await Setting.findOne({ branch: branchId });
-    
+    // Get settings for this branch (stored in branches table as JSON or separate settings table)
+    // The previous implementation used a 'Setting' model linked to branch. 
+    // In sqlite.js, `branches` table has `settings` column (JSON string).
+    // AND there is a `settings` table (key-value).
+    // Let's use the schema from sqlite.js effectively.
+    // If migration moved data to `branches.settings`, we use that. 
+    // BUT the mongo model `Setting` suggests a separate document.
+    // Let's use `branches.settings` JSON column for simplicity if populated, OR the `settings` table.
+    // `sqlite.js` shows `settings` table with `key`, `value`, `branch`. This is key-value store.
+    // original code returned an object.
+
+    // Check if we use key-value or object storage.
+    // For now, let's assume we store the whole settings object in `branches.settings` JSON column as per `sqlite.js` comments "settings TEXT, -- JSON string".
+    // AND if `Setting` model had elaborate structure, JSON in branch is easiest.
+
+    let settings = {};
+    if (branch.settings) {
+      try {
+        settings = JSON.parse(branch.settings);
+      } catch (e) {
+        console.error("Failed to parse branch settings", e);
+      }
+    } else {
+      // Fallback or legacy check on `settings` table if used as Key-Value
+      // For now, defaulting to empty or extracting from KV if needed.
+    }
+
     const response = {
-      branch: branch,
+      branch: { ...branch, _id: branch.id.toString() },
       settings: settings || {}
     };
 
@@ -35,44 +59,55 @@ export const updateBranchSettings = async (req, res) => {
     const { branchId } = req.params;
     const updateData = req.body;
 
-    const branch = await Branch.findById(branchId);
+    const branch = db.prepare('SELECT * FROM branches WHERE id = ?').get(branchId);
     if (!branch) {
       return res.status(404).json({ success: false, message: 'Branch not found' });
     }
 
     // Check permissions
-    if (req.user.role !== 'admin' && req.user.branch._id.toString() !== branchId) {
+    if (req.user.role !== 'admin' && (req.user.branch._id || req.user.branch.id).toString() !== branchId) {
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
 
+    const updates = [];
+    const params = [];
+
     // Update branch information
     if (updateData.branch) {
-      const updatedBranch = await Branch.findByIdAndUpdate(
-        branchId,
-        updateData.branch,
-        { new: true, runValidators: true }
-      );
+      const bData = updateData.branch;
+      if (bData.name) { updates.push('name = ?'); params.push(bData.name); }
+      if (bData.address) { updates.push('address = ?'); params.push(bData.address); }
+      if (bData.phone) { updates.push('phone = ?'); params.push(bData.phone); }
+      if (bData.email) { updates.push('email = ?'); params.push(bData.email); }
     }
 
-    // Update or create settings
-    let settings = await Setting.findOne({ branch: branchId });
-    
-    if (settings && updateData.settings) {
-      settings = await Setting.findByIdAndUpdate(
-        settings._id,
-        updateData.settings,
-        { new: true, runValidators: true }
-      );
-    } else if (updateData.settings) {
-      settings = await Setting.create({
-        ...updateData.settings,
-        branch: branchId
-      });
+    // Update settings JSON
+    if (updateData.settings) {
+      // Merge with existing
+      let currentSettings = {};
+      if (branch.settings) {
+        try { currentSettings = JSON.parse(branch.settings); } catch (e) { }
+      }
+      const newSettings = { ...currentSettings, ...updateData.settings };
+      updates.push('settings = ?');
+      params.push(JSON.stringify(newSettings));
+    }
+
+    if (updates.length > 0) {
+      updates.push('updated_at = CURRENT_TIMESTAMP');
+      params.push(branchId);
+      db.prepare(`UPDATE branches SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+    }
+
+    const updatedBranch = db.prepare('SELECT * FROM branches WHERE id = ?').get(branchId);
+    let finalSettings = {};
+    if (updatedBranch.settings) {
+      try { finalSettings = JSON.parse(updatedBranch.settings); } catch (e) { }
     }
 
     const response = {
-      branch: await Branch.findById(branchId),
-      settings: settings || {}
+      branch: { ...updatedBranch, _id: updatedBranch.id.toString() },
+      settings: finalSettings
     };
 
     res.json({ success: true, data: response, message: 'Branch settings updated successfully' });
@@ -83,19 +118,25 @@ export const updateBranchSettings = async (req, res) => {
 
 export const getSettings = async (req, res) => {
   try {
+    // This endpoint seems to return "System" settings or default branch settings?
+    // The original code did:
+    // if admin: Setting.findOne({}) -> returns first doc?
+    // else: Setting.findOne({branch: user.branch})
+
+    // We will standardize on Branch settings.
+    const branchId = req.user.role === 'admin' ?
+      (req.query.branchId || (req.user.branch._id || req.user.branch.id)) :
+      (req.user.branch._id || req.user.branch.id);
+
+    const branch = db.prepare('SELECT * FROM branches WHERE id = ?').get(branchId.toString());
+
     let settings;
-    
-    if (req.user.role === 'admin') {
-      // Admin can access all settings or default settings
-      settings = await Setting.findOne({}).populate('branch');
-    } else {
-      // Regular users get their branch settings
-      const branchId = req.user.branch._id.toString();
-      settings = await Setting.findOne({ branch: branchId }).populate('branch');
+    if (branch && branch.settings) {
+      try { settings = JSON.parse(branch.settings); } catch (e) { }
     }
 
-    if (!settings) {
-      // Return default settings if none found
+    if (!settings || Object.keys(settings).length === 0) {
+      // Return default settings
       settings = {
         restaurantName: 'Mama Africa Restaurant',
         currency: 'USD',
@@ -115,6 +156,8 @@ export const getSettings = async (req, res) => {
       };
     }
 
+    // If admin requested general settings and no branch specified or not found, return defaults.
+
     res.json({ success: true, data: settings });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Server error', error: error.message });
@@ -124,26 +167,24 @@ export const getSettings = async (req, res) => {
 export const updateSettings = async (req, res) => {
   try {
     const updateData = req.body;
-    let settings;
+    const branchId = req.user.role === 'admin' ?
+      (req.body.branchId || (req.user.branch._id || req.user.branch.id)) :
+      (req.user.branch._id || req.user.branch.id);
 
-    if (req.user.role === 'admin') {
-      // Admin can update any settings
-      settings = await Setting.findOneAndUpdate(
-        {},
-        updateData,
-        { new: true, upsert: true, runValidators: true }
-      );
-    } else {
-      // Regular users update their branch settings
-      const branchId = req.user.branch._id.toString();
-      settings = await Setting.findOneAndUpdate(
-        { branch: branchId },
-        updateData,
-        { new: true, upsert: true, runValidators: true }
-      );
+    // Update branch settings JSON
+    const branch = db.prepare('SELECT * FROM branches WHERE id = ?').get(branchId.toString());
+
+    let currentSettings = {};
+    if (branch && branch.settings) {
+      try { currentSettings = JSON.parse(branch.settings); } catch (e) { }
     }
 
-    res.json({ success: true, data: settings, message: 'Settings updated successfully' });
+    const newSettings = { ...currentSettings, ...updateData }; // Merge
+
+    db.prepare('UPDATE branches SET settings = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+      .run(JSON.stringify(newSettings), branchId.toString());
+
+    res.json({ success: true, data: newSettings, message: 'Settings updated successfully' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Server error', error: error.message });
   }
@@ -168,13 +209,11 @@ export const uploadLogo = async (req, res) => {
     });
 
     // Update branch with logo URL
-    const branch = await Branch.findByIdAndUpdate(
-      branchId,
-      { logo: result.secure_url },
-      { new: true }
-    );
+    db.prepare('UPDATE branches SET logo = ? WHERE id = ?').run(result.secure_url, branchId);
 
-    res.json({ success: true, data: { logo: result.secure_url, branch }, message: 'Logo uploaded successfully' });
+    const branch = db.prepare('SELECT * FROM branches WHERE id = ?').get(branchId);
+
+    res.json({ success: true, data: { logo: result.secure_url, branch: { ...branch, _id: branch.id.toString() } }, message: 'Logo uploaded successfully' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Server error', error: error.message });
   }
@@ -182,6 +221,7 @@ export const uploadLogo = async (req, res) => {
 
 export const getSystemSettings = async (req, res) => {
   try {
+    // Static system settings
     const systemSettings = {
       appName: 'Mama Africa Restaurant',
       version: '1.0.0',

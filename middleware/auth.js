@@ -1,6 +1,6 @@
+// SQLite-only auth middleware
 import jwt from 'jsonwebtoken';
-import User from '../models/User.js';
-import Branch from '../models/Branch.js';
+import { db } from '../db/index.js';
 import bcrypt from 'bcryptjs';
 
 // Demo accounts configuration
@@ -37,9 +37,74 @@ const DEMO_ACCOUNTS = [
   }
 ];
 
+// Helper to get or create demo branch
+const getOrCreateDemoBranch = () => {
+  let branch = db.prepare('SELECT * FROM branches WHERE branchCode = ?').get('DEMO');
+  
+  if (!branch) {
+    const settings = JSON.stringify({
+      taxRate: 10,
+      serviceCharge: 5,
+      currency: 'USD',
+      timezone: 'UTC'
+    });
+    
+    const result = db.prepare(`
+      INSERT INTO branches (name, branchCode, address, phone, email, settings, isActive)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      'Demo Restaurant',
+      'DEMO',
+      '123 Demo Street, Demo City',
+      '+1 (555) 123-DEMO',
+      'demo@restaurant.com',
+      settings,
+      1
+    );
+    
+    branch = db.prepare('SELECT * FROM branches WHERE id = ?').get(result.lastInsertRowid);
+  }
+  
+  // Parse settings JSON
+  if (branch.settings) {
+    try {
+      branch.settings = JSON.parse(branch.settings);
+    } catch (e) {
+      branch.settings = { taxRate: 10, serviceCharge: 5, currency: 'USD', timezone: 'UTC' };
+    }
+  }
+  
+  return branch;
+};
+
+// Helper to get or create demo user
+const getOrCreateDemoUser = (demoAccount, branchId) => {
+  let user = db.prepare('SELECT * FROM users WHERE email = ?').get(demoAccount.email);
+  
+  if (!user) {
+    const hashedPassword = bcrypt.hashSync(demoAccount.password, 10);
+    const result = db.prepare(`
+      INSERT INTO users (name, email, username, password, role, branch, isActive)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      demoAccount.name,
+      demoAccount.email,
+      demoAccount.email,
+      hashedPassword,
+      demoAccount.role,
+      branchId.toString(),
+      1
+    );
+    
+    user = db.prepare('SELECT * FROM users WHERE id = ?').get(result.lastInsertRowid);
+  }
+  
+  return user;
+};
+
 export const auth = async (req, res, next) => {
   try {
-    // Get token from header - handle both "Bearer token" and direct token formats
+    // Get token from header
     const authHeader = req.header('Authorization');
     let token = null;
     
@@ -47,7 +112,6 @@ export const auth = async (req, res, next) => {
       if (authHeader.startsWith('Bearer ')) {
         token = authHeader.replace('Bearer ', '');
       } else {
-        // Direct token (for demo tokens)
         token = authHeader;
       }
     }
@@ -63,12 +127,10 @@ export const auth = async (req, res, next) => {
       });
     }
 
-    // Handle demo tokens (simple string tokens)
+    // Handle demo tokens
     if (token.startsWith('demo-')) {
       console.log('✅ Demo token detected:', token);
       
-      // Extract demo user type from token (e.g., "demo-admin-1234567890" -> "admin")
-      // Token format: demo-{role}-{timestamp}
       const tokenParts = token.split('-');
       if (tokenParts.length < 2) {
         return res.status(401).json({
@@ -77,8 +139,7 @@ export const auth = async (req, res, next) => {
         });
       }
       
-      // Get role (second part after "demo")
-      const demoRole = tokenParts[1]; // e.g., "admin" from "demo-admin-1234567890"
+      const demoRole = tokenParts[1];
       const demoAccount = DEMO_ACCOUNTS.find(acc => acc.role === demoRole);
       
       if (!demoAccount) {
@@ -90,46 +151,26 @@ export const auth = async (req, res, next) => {
       }
 
       // Get or create demo branch
-      let demoBranch = await Branch.findOne({ branchCode: 'DEMO' });
-      if (!demoBranch) {
-        demoBranch = new Branch({
-          name: 'Demo Restaurant',
-          branchCode: 'DEMO',
-          address: '123 Demo Street, Demo City',
-          phone: '+1 (555) 123-DEMO',
-          email: 'demo@restaurant.com',
-          settings: {
-            taxRate: 10,
-            serviceCharge: 5
-          }
-        });
-        await demoBranch.save();
-      }
-
+      const demoBranch = getOrCreateDemoBranch();
+      
       // Get or create demo user
-      let demoUser = await User.findOne({ email: demoAccount.email }).populate('branch');
-      if (!demoUser) {
-        demoUser = new User({
-          name: demoAccount.name,
-          email: demoAccount.email,
-          password: await bcrypt.hash(demoAccount.password, 10),
-          role: demoAccount.role,
-          branch: demoBranch._id,
-          isDemo: true
-        });
-        await demoUser.save();
-        await demoUser.populate('branch');
-      }
+      const demoUser = getOrCreateDemoUser(demoAccount, demoBranch.id);
 
       // Set user data in request
       req.user = {
-        id: demoUser._id,
-        _id: demoUser._id,
+        id: demoUser.id.toString(),
+        _id: demoUser.id.toString(),
         name: demoUser.name,
         email: demoUser.email,
         role: demoUser.role,
         isDemo: true,
-        branch: demoUser.branch
+        branch: {
+          _id: demoBranch.id.toString(),
+          id: demoBranch.id.toString(),
+          name: demoBranch.name,
+          branchCode: demoBranch.branchCode,
+          settings: demoBranch.settings
+        }
       };
       
       return next();
@@ -140,8 +181,8 @@ export const auth = async (req, res, next) => {
       const decoded = jwt.verify(token, process.env.JWT_SECRET || 'restaurant-secret-key-2024');
       console.log('✅ JWT token verified successfully');
       
-      // Fetch user from database
-      const user = await User.findById(decoded.id).populate('branch');
+      // Fetch user from SQLite database
+      const user = db.prepare('SELECT * FROM users WHERE id = ?').get(decoded.id);
       if (!user) {
         return res.status(401).json({
           success: false,
@@ -156,14 +197,39 @@ export const auth = async (req, res, next) => {
         });
       }
 
+      // Get branch
+      const branch = db.prepare('SELECT * FROM branches WHERE id = ?').get(user.branch);
+      if (!branch) {
+        return res.status(401).json({
+          success: false,
+          message: 'Branch not found'
+        });
+      }
+
+      // Parse branch settings
+      let branchSettings = {};
+      if (branch.settings) {
+        try {
+          branchSettings = JSON.parse(branch.settings);
+        } catch (e) {
+          branchSettings = { taxRate: 10, serviceCharge: 5, currency: 'USD', timezone: 'UTC' };
+        }
+      }
+
       req.user = {
-        id: user._id,
-        _id: user._id,
+        id: user.id.toString(),
+        _id: user.id.toString(),
         name: user.name,
         email: user.email,
         role: user.role,
-        isDemo: user.isDemo || false,
-        branch: user.branch
+        isDemo: false,
+        branch: {
+          _id: branch.id.toString(),
+          id: branch.id.toString(),
+          name: branch.name,
+          branchCode: branch.branchCode,
+          settings: branchSettings
+        }
       };
       
       next();

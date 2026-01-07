@@ -1,18 +1,31 @@
-// backend/controllers/userController.js
-import User from '../models/User.js';
+// SQLite-only user controller
+import { db } from '../db/index.js';
 import bcrypt from 'bcryptjs';
 
 // Get all users
 export const getUsers = async (req, res) => {
   try {
-    const users = await User.find({ branch: req.user.branch._id })
-      .select('-password')
-      .populate('branch', 'name branchCode')
-      .sort({ name: 1 });
+    const branchId = req.user.branch._id || req.user.branch.id;
+
+    // Join with branches table to get branch details if needed, though they are in the same branch usually
+    // Using branch table ID lookup
+    const users = db.prepare(`
+        SELECT u.*, b.name as branchName, b.branchCode 
+        FROM users u 
+        LEFT JOIN branches b ON u.branch = b.id
+        WHERE u.branch = ?
+        ORDER BY u.name ASC
+    `).all(branchId.toString());
 
     res.json({
       success: true,
-      data: users
+      data: users.map(u => ({
+        ...u,
+        _id: u.id.toString(),
+        id: u.id.toString(),
+        isActive: u.isActive === 1,
+        branch: { _id: u.branch, id: u.branch, name: u.branchName, branchCode: u.branchCode }
+      }))
     });
   } catch (error) {
     console.error('Get users error:', error);
@@ -26,10 +39,15 @@ export const getUsers = async (req, res) => {
 // Get single user
 export const getUser = async (req, res) => {
   try {
-    const user = await User.findOne({
-      _id: req.params.id,
-      branch: req.user.branch._id
-    }).select('-password').populate('branch', 'name branchCode');
+    const { id } = req.params;
+    const branchId = req.user.branch._id || req.user.branch.id;
+
+    const user = db.prepare(`
+        SELECT u.*, b.name as branchName, b.branchCode 
+        FROM users u 
+        LEFT JOIN branches b ON u.branch = b.id
+        WHERE u.id = ? AND u.branch = ?
+    `).get(id, branchId.toString());
 
     if (!user) {
       return res.status(404).json({
@@ -40,7 +58,13 @@ export const getUser = async (req, res) => {
 
     res.json({
       success: true,
-      data: user
+      data: {
+        ...user,
+        _id: user.id.toString(),
+        id: user.id.toString(),
+        isActive: user.isActive === 1,
+        branch: { _id: user.branch, id: user.branch, name: user.branchName, branchCode: user.branchCode }
+      }
     });
   } catch (error) {
     console.error('Get user error:', error);
@@ -54,31 +78,54 @@ export const getUser = async (req, res) => {
 // Create user
 export const createUser = async (req, res) => {
   try {
-    const userData = {
-      ...req.body,
-      branch: req.user.branch._id
-    };
+    const { name, email, username, password, role } = req.body;
+    const branchId = req.user.branch._id || req.user.branch.id;
 
-    const user = new User(userData);
-    await user.save();
+    // Check existing
+    const existing = db.prepare('SELECT * FROM users WHERE (email = ? OR username = ?) AND branch = ?')
+      .get(email, username, branchId.toString());
 
-    const userResponse = await User.findById(user._id)
-      .select('-password')
-      .populate('branch', 'name branchCode');
+    if (existing) {
+      return res.status(400).json({
+        success: false,
+        message: 'User with this email or username already exists'
+      });
+    }
+
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+
+    const result = db.prepare(`
+        INSERT INTO users (name, email, username, password, role, branch, isActive)
+        VALUES (?, ?, ?, ?, ?, ?, 1)
+    `).run(
+      name,
+      email,
+      username,
+      hashedPassword,
+      role || 'staff',
+      branchId.toString()
+    );
+
+    const user = db.prepare(`
+        SELECT u.*, b.name as branchName, b.branchCode 
+        FROM users u 
+        LEFT JOIN branches b ON u.branch = b.id
+        WHERE u.id = ?
+    `).get(result.lastInsertRowid);
 
     res.status(201).json({
       success: true,
-      data: userResponse,
+      data: {
+        ...user,
+        _id: user.id.toString(),
+        id: user.id.toString(),
+        branch: { _id: user.branch, name: user.branchName, branchCode: user.branchCode }
+      },
       message: 'User created successfully'
     });
   } catch (error) {
     console.error('Create user error:', error);
-    if (error.code === 11000) {
-      return res.status(400).json({
-        success: false,
-        message: 'User with this email already exists'
-      });
-    }
     res.status(500).json({
       success: false,
       message: 'Failed to create user'
@@ -89,27 +136,46 @@ export const createUser = async (req, res) => {
 // Update user
 export const updateUser = async (req, res) => {
   try {
-    const updateData = { ...req.body };
-    
-    // Don't update password through this endpoint
-    delete updateData.password;
+    const { id } = req.params;
+    const updateData = req.body;
+    const branchId = req.user.branch._id || req.user.branch.id;
 
-    const user = await User.findOneAndUpdate(
-      { _id: req.params.id, branch: req.user.branch._id },
-      updateData,
-      { new: true, runValidators: true }
-    ).select('-password').populate('branch', 'name branchCode');
+    // Don't update password through this endpoint usually, IF provided hash it
+    // But original controller said "Don't update password through this endpoint"
+    // So we skip password.
+
+    const updates = [];
+    const params = [];
+
+    if (updateData.name) { updates.push('name = ?'); params.push(updateData.name); }
+    if (updateData.email) { updates.push('email = ?'); params.push(updateData.email); }
+    if (updateData.username) { updates.push('username = ?'); params.push(updateData.username); }
+    if (updateData.role) { updates.push('role = ?'); params.push(updateData.role); }
+
+    updates.push('updated_at = CURRENT_TIMESTAMP');
+    params.push(id, branchId.toString());
+
+    db.prepare(`UPDATE users SET ${updates.join(', ')} WHERE id = ? AND branch = ?`).run(...params);
+
+    const user = db.prepare(`
+        SELECT u.*, b.name as branchName, b.branchCode 
+        FROM users u 
+        LEFT JOIN branches b ON u.branch = b.id
+        WHERE u.id = ?
+    `).get(id);
 
     if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: 'User not found'
-      });
+      return res.status(404).json({ success: false, message: 'User not found' });
     }
 
     res.json({
       success: true,
-      data: user,
+      data: {
+        ...user,
+        _id: user.id.toString(),
+        isActive: user.isActive === 1,
+        branch: { _id: user.branch, name: user.branchName, branchCode: user.branchCode }
+      },
       message: 'User updated successfully'
     });
   } catch (error) {
@@ -124,18 +190,17 @@ export const updateUser = async (req, res) => {
 // Delete user
 export const deleteUser = async (req, res) => {
   try {
-    const user = await User.findOneAndDelete({
-      _id: req.params.id,
-      branch: req.user.branch._id
-    });
+    const { id } = req.params;
+    const branchId = req.user.branch._id || req.user.branch.id;
 
-    if (!user) {
+    const result = db.prepare('DELETE FROM users WHERE id = ? AND branch = ?').run(id, branchId.toString());
+
+    if (result.changes === 0) {
       return res.status(404).json({
         success: false,
         message: 'User not found'
       });
     }
-
     res.json({
       success: true,
       message: 'User deleted successfully'
@@ -152,10 +217,10 @@ export const deleteUser = async (req, res) => {
 // Toggle user status
 export const toggleUserStatus = async (req, res) => {
   try {
-    const user = await User.findOne({
-      _id: req.params.id,
-      branch: req.user.branch._id
-    });
+    const { id } = req.params;
+    const branchId = req.user.branch._id || req.user.branch.id;
+
+    const user = db.prepare('SELECT isActive FROM users WHERE id = ? AND branch = ?').get(id, branchId.toString());
 
     if (!user) {
       return res.status(404).json({
@@ -164,17 +229,25 @@ export const toggleUserStatus = async (req, res) => {
       });
     }
 
-    user.isActive = !user.isActive;
-    await user.save();
+    const newStatus = user.isActive === 1 ? 0 : 1;
+    db.prepare('UPDATE users SET isActive = ? WHERE id = ?').run(newStatus, id);
 
-    const userResponse = await User.findById(user._id)
-      .select('-password')
-      .populate('branch', 'name branchCode');
+    const updatedUser = db.prepare(`
+        SELECT u.*, b.name as branchName, b.branchCode 
+        FROM users u 
+        LEFT JOIN branches b ON u.branch = b.id
+        WHERE u.id = ?
+    `).get(id);
 
     res.json({
       success: true,
-      data: userResponse,
-      message: `User ${user.isActive ? 'activated' : 'deactivated'} successfully`
+      data: {
+        ...updatedUser,
+        _id: updatedUser.id.toString(),
+        isActive: updatedUser.isActive === 1,
+        branch: { _id: updatedUser.branch, name: updatedUser.branchName, branchCode: updatedUser.branchCode }
+      },
+      message: `User ${newStatus === 1 ? 'activated' : 'deactivated'} successfully`
     });
   } catch (error) {
     console.error('Toggle user status error:', error);

@@ -1,29 +1,68 @@
-// backend/controllers/productController.js
-import Product from '../models/Product.js';
-import mongoose from 'mongoose';
+// SQLite-only product controller
+import { db } from '../db/index.js';
 
-// Get all products
+// Helper to format product response
+const formatProduct = (row) => {
+  if (!row) return null;
+  return {
+    _id: row.id.toString(),
+    id: row.id.toString(),
+    name: row.name,
+    description: row.description || '',
+    price: row.price,
+    cost: row.cost || 0,
+    category: row.category,
+    stock: row.stock || 0,
+    minStock: row.minStock || 10,
+    isAvailable: row.isAvailable === 1,
+    active: row.active === 1,
+    image: row.image || '',
+    sku: row.sku || '',
+    barcode: row.barcode || '',
+    branch: row.branch,
+    createdAt: row.updated_at,
+    updatedAt: row.updated_at
+  };
+};
+
+// Get all products - SQLite only
 export const getProducts = async (req, res) => {
   try {
     const { category, lowStock, search, page = 1, limit = 20 } = req.query;
-    
-    const filter = { branch: req.user.branch._id };
-    
-    if (category && category !== 'all') filter.category = category;
-    if (lowStock === 'true') filter.stock = { $lte: 10 };
-    if (search) {
-      filter.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { description: { $regex: search, $options: 'i' } }
-      ];
+    const branchId = req.user.branch._id || req.user.branch.id;
+
+    let query = 'SELECT * FROM products WHERE branch = ?';
+    const params = [branchId.toString()];
+
+    if (category && category !== 'all') {
+      query += ' AND category = ?';
+      params.push(category);
     }
 
-    const products = await Product.find(filter)
-      .sort({ name: 1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit);
+    if (lowStock === 'true') {
+      query += ' AND stock <= 10';
+    }
 
-    const total = await Product.countDocuments(filter);
+    if (search) {
+      query += ' AND (name LIKE ? OR description LIKE ?)';
+      const searchTerm = `%${search}%`;
+      params.push(searchTerm, searchTerm);
+    }
+
+    query += ' ORDER BY name ASC';
+
+    // Get total count
+    const countQuery = query.replace('SELECT *', 'SELECT COUNT(*) as total');
+    const totalResult = db.prepare(countQuery).get(...params);
+    const total = totalResult.total || 0;
+
+    // Apply pagination
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+    query += ` LIMIT ? OFFSET ?`;
+    params.push(parseInt(limit), offset);
+
+    const rows = db.prepare(query).all(...params);
+    const products = rows.map(formatProduct);
 
     res.json({
       success: true,
@@ -46,13 +85,13 @@ export const getProducts = async (req, res) => {
   }
 };
 
-// Get single product
+// Get single product - SQLite only
 export const getProduct = async (req, res) => {
   try {
-    const product = await Product.findOne({
-      _id: req.params.id,
-      branch: req.user.branch._id
-    });
+    const productId = req.params.id;
+    const branchId = req.user.branch._id || req.user.branch.id;
+
+    const product = db.prepare('SELECT * FROM products WHERE id = ? AND branch = ?').get(productId, branchId.toString());
 
     if (!product) {
       return res.status(404).json({
@@ -63,7 +102,7 @@ export const getProduct = async (req, res) => {
 
     res.json({
       success: true,
-      data: product
+      data: formatProduct(product)
     });
   } catch (error) {
     console.error('Get product error:', error);
@@ -74,14 +113,12 @@ export const getProduct = async (req, res) => {
   }
 };
 
-// Create product - ENHANCED with better category handling
+// Create product - SQLite only
 export const createProduct = async (req, res) => {
   try {
     const { name, description, price, cost, category, stock, minStock, isAvailable, image } = req.body;
-    
-    console.log('Creating product with data:', req.body); // Debug log
+    const branchId = req.user.branch._id || req.user.branch.id;
 
-    // Basic validation
     if (!name || !price || !category) {
       return res.status(400).json({
         success: false,
@@ -89,7 +126,6 @@ export const createProduct = async (req, res) => {
       });
     }
 
-    // Clean and validate category
     const cleanCategory = category.toString().trim();
     if (!cleanCategory) {
       return res.status(400).json({
@@ -98,44 +134,39 @@ export const createProduct = async (req, res) => {
       });
     }
 
-    const productData = {
-      name: name.toString().trim(),
-      description: description ? description.toString().trim() : '',
-      price: parseFloat(price),
-      cost: cost ? parseFloat(cost) : 0,
-      category: cleanCategory,
-      stock: stock ? parseInt(stock) : 0,
-      minStock: minStock ? parseInt(minStock) : 10,
-      isAvailable: isAvailable !== false,
-      image: image || '',
-      branch: req.user.branch._id
-    };
+    const result = db.prepare(`
+      INSERT INTO products (name, description, price, cost, category, stock, minStock, isAvailable, active, image, branch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      name.toString().trim(),
+      description ? description.toString().trim() : '',
+      parseFloat(price),
+      cost ? parseFloat(cost) : 0,
+      cleanCategory,
+      stock ? parseInt(stock) : 0,
+      minStock ? parseInt(minStock) : 10,
+      isAvailable !== false ? 1 : 0,
+      1,
+      image || '',
+      branchId.toString()
+    );
 
-    console.log('Processed product data:', productData); // Debug log
-
-    const product = new Product(productData);
-    await product.save();
+    const product = db.prepare('SELECT * FROM products WHERE id = ?').get(result.lastInsertRowid);
 
     // Emit real-time event
     if (req.io) {
-      req.io.to(`branch-${req.user.branch._id}`).emit('product-created', product);
-      req.io.to(`pos-${req.user.branch._id}`).emit('product-added', product);
+      const formattedProduct = formatProduct(product);
+      req.io.to(`branch-${branchId}`).emit('product-created', formattedProduct);
+      req.io.to(`pos-${branchId}`).emit('product-added', formattedProduct);
     }
 
     res.status(201).json({
       success: true,
-      data: product,
+      data: formatProduct(product),
       message: 'Product created successfully'
     });
   } catch (error) {
     console.error('Create product error:', error);
-    if (error.name === 'ValidationError') {
-      return res.status(400).json({
-        success: false,
-        message: 'Validation error',
-        errors: Object.values(error.errors).map(e => e.message)
-      });
-    }
     res.status(500).json({
       success: false,
       message: 'Failed to create product'
@@ -143,56 +174,85 @@ export const createProduct = async (req, res) => {
   }
 };
 
-// Update product
+// Update product - SQLite only
 export const updateProduct = async (req, res) => {
   try {
+    const productId = req.params.id;
+    const branchId = req.user.branch._id || req.user.branch.id;
     const { name, description, price, cost, category, stock, minStock, isAvailable, image } = req.body;
-    
-    const updateData = {
-      ...(name && { name: name.toString().trim() }),
-      ...(description !== undefined && { description: description.toString().trim() }),
-      ...(price && { price: parseFloat(price) }),
-      ...(cost !== undefined && { cost: parseFloat(cost) }),
-      ...(category && { category: category.toString().trim() }),
-      ...(stock !== undefined && { stock: parseInt(stock) }),
-      ...(minStock !== undefined && { minStock: parseInt(minStock) }),
-      ...(isAvailable !== undefined && { isAvailable: isAvailable }),
-      ...(image !== undefined && { image: image })
-    };
 
-    const product = await Product.findOneAndUpdate(
-      { _id: req.params.id, branch: req.user.branch._id },
-      updateData,
-      { new: true, runValidators: true }
-    );
-
-    if (!product) {
+    // Check if product exists
+    const existing = db.prepare('SELECT * FROM products WHERE id = ? AND branch = ?').get(productId, branchId.toString());
+    if (!existing) {
       return res.status(404).json({
         success: false,
         message: 'Product not found'
       });
     }
 
+    // Build update query dynamically
+    const updates = [];
+    const params = [];
+
+    if (name !== undefined) {
+      updates.push('name = ?');
+      params.push(name.toString().trim());
+    }
+    if (description !== undefined) {
+      updates.push('description = ?');
+      params.push(description.toString().trim());
+    }
+    if (price !== undefined) {
+      updates.push('price = ?');
+      params.push(parseFloat(price));
+    }
+    if (cost !== undefined) {
+      updates.push('cost = ?');
+      params.push(parseFloat(cost));
+    }
+    if (category !== undefined) {
+      updates.push('category = ?');
+      params.push(category.toString().trim());
+    }
+    if (stock !== undefined) {
+      updates.push('stock = ?');
+      params.push(parseInt(stock));
+    }
+    if (minStock !== undefined) {
+      updates.push('minStock = ?');
+      params.push(parseInt(minStock));
+    }
+    if (isAvailable !== undefined) {
+      updates.push('isAvailable = ?');
+      params.push(isAvailable ? 1 : 0);
+    }
+    if (image !== undefined) {
+      updates.push('image = ?');
+      params.push(image);
+    }
+
+    updates.push('updated_at = CURRENT_TIMESTAMP');
+    params.push(productId, branchId.toString());
+
+    const query = `UPDATE products SET ${updates.join(', ')} WHERE id = ? AND branch = ?`;
+    db.prepare(query).run(...params);
+
+    const product = db.prepare('SELECT * FROM products WHERE id = ?').get(productId);
+
     // Emit real-time event
     if (req.io) {
-      req.io.to(`branch-${req.user.branch._id}`).emit('product-updated', product);
-      req.io.to(`pos-${req.user.branch._id}`).emit('product-modified', product);
+      const formattedProduct = formatProduct(product);
+      req.io.to(`branch-${branchId}`).emit('product-updated', formattedProduct);
+      req.io.to(`pos-${branchId}`).emit('product-modified', formattedProduct);
     }
 
     res.json({
       success: true,
-      data: product,
+      data: formatProduct(product),
       message: 'Product updated successfully'
     });
   } catch (error) {
     console.error('Update product error:', error);
-    if (error.name === 'ValidationError') {
-      return res.status(400).json({
-        success: false,
-        message: 'Validation error',
-        errors: Object.values(error.errors).map(e => e.message)
-      });
-    }
     res.status(500).json({
       success: false,
       message: 'Failed to update product'
@@ -200,13 +260,13 @@ export const updateProduct = async (req, res) => {
   }
 };
 
-// Delete product
+// Delete product - SQLite only
 export const deleteProduct = async (req, res) => {
   try {
-    const product = await Product.findOneAndDelete({
-      _id: req.params.id,
-      branch: req.user.branch._id
-    });
+    const productId = req.params.id;
+    const branchId = req.user.branch._id || req.user.branch.id;
+
+    const product = db.prepare('SELECT * FROM products WHERE id = ? AND branch = ?').get(productId, branchId.toString());
 
     if (!product) {
       return res.status(404).json({
@@ -215,10 +275,13 @@ export const deleteProduct = async (req, res) => {
       });
     }
 
+    db.prepare('DELETE FROM products WHERE id = ? AND branch = ?').run(productId, branchId.toString());
+
     // Emit real-time event
     if (req.io) {
-      req.io.to(`branch-${req.user.branch._id}`).emit('product-deleted', product);
-      req.io.to(`pos-${req.user.branch._id}`).emit('product-removed', product);
+      const formattedProduct = formatProduct(product);
+      req.io.to(`branch-${branchId}`).emit('product-deleted', formattedProduct);
+      req.io.to(`pos-${branchId}`).emit('product-removed', formattedProduct);
     }
 
     res.json({
@@ -234,16 +297,14 @@ export const deleteProduct = async (req, res) => {
   }
 };
 
-// Update stock
+// Update stock - SQLite only
 export const updateStock = async (req, res) => {
   try {
+    const productId = req.params.id;
+    const branchId = req.user.branch._id || req.user.branch.id;
     const { stock } = req.body;
-    
-    const product = await Product.findOneAndUpdate(
-      { _id: req.params.id, branch: req.user.branch._id },
-      { stock: parseInt(stock) },
-      { new: true }
-    );
+
+    const product = db.prepare('SELECT * FROM products WHERE id = ? AND branch = ?').get(productId, branchId.toString());
 
     if (!product) {
       return res.status(404).json({
@@ -252,18 +313,23 @@ export const updateStock = async (req, res) => {
       });
     }
 
-    // Emit real-time event for stock update
+    db.prepare('UPDATE products SET stock = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND branch = ?')
+      .run(parseInt(stock), productId, branchId.toString());
+
+    const updatedProduct = db.prepare('SELECT * FROM products WHERE id = ?').get(productId);
+
+    // Emit real-time event
     if (req.io) {
-      req.io.to(`branch-${req.user.branch._id}`).emit('stock-updated', {
-        productId: product._id,
-        stock: product.stock,
-        branch: req.user.branch._id
+      req.io.to(`branch-${branchId}`).emit('stock-updated', {
+        productId: updatedProduct.id.toString(),
+        stock: updatedProduct.stock,
+        branch: branchId.toString()
       });
     }
 
     res.json({
       success: true,
-      data: product,
+      data: formatProduct(updatedProduct),
       message: 'Stock updated successfully'
     });
   } catch (error) {
@@ -275,23 +341,19 @@ export const updateStock = async (req, res) => {
   }
 };
 
-// Get categories - ENHANCED to handle dynamic categories
+// Get categories - SQLite only
 export const getCategories = async (req, res) => {
   try {
-    const categories = await Product.distinct('category', {
-      branch: req.user.branch._id
-    });
+    const branchId = req.user.branch._id || req.user.branch.id;
 
-    // Sort categories alphabetically and ensure they're unique
-    const uniqueCategories = [...new Set(categories)]
-      .filter(cat => cat && cat.trim()) // Remove empty categories
-      .sort();
+    const rows = db.prepare('SELECT DISTINCT category FROM products WHERE branch = ? AND category IS NOT NULL AND category != ""')
+      .all(branchId.toString());
 
-    console.log('Fetched categories:', uniqueCategories); // Debug log
+    const categories = [...new Set(rows.map(r => r.category).filter(cat => cat && cat.trim()))].sort();
 
     res.json({
       success: true,
-      data: uniqueCategories
+      data: categories
     });
   } catch (error) {
     console.error('Get categories error:', error);
@@ -302,13 +364,15 @@ export const getCategories = async (req, res) => {
   }
 };
 
-// Get low stock products
+// Get low stock products - SQLite only
 export const getLowStockProducts = async (req, res) => {
   try {
-    const products = await Product.find({
-      branch: req.user.branch._id,
-      stock: { $lte: 10 }
-    }).sort({ stock: 1 });
+    const branchId = req.user.branch._id || req.user.branch.id;
+
+    const rows = db.prepare('SELECT * FROM products WHERE branch = ? AND stock <= 10 ORDER BY stock ASC')
+      .all(branchId.toString());
+
+    const products = rows.map(formatProduct);
 
     res.json({
       success: true,
