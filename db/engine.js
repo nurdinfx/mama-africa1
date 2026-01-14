@@ -14,23 +14,14 @@ export const setDatabaseEngine = (engine) => {
  * - Tries to connect to MongoDB with a short timeout (3s). On success, uses "mongo".
  * - On failure, falls back to "sqlite" only.
  */
+// Initialize SQLite engine only
 export const initDatabaseEngine = async () => {
   // Always make sure SQLite schema exists
   ensureSqliteTables();
 
-  try {
-    const mongoConn = await connectMongo();
-    if (mongoConn) {
-      setDatabaseEngine('mongo');
-    } else {
-      setDatabaseEngine('sqlite');
-    }
-  } catch (e) {
-    console.error('❌ [DB] Error while initializing MongoDB, using SQLite only:', e.message);
-    setDatabaseEngine('sqlite');
-  }
-
-  console.log('🗄️  Database Mode:', databaseEngine.toUpperCase());
+  // Force SQLite engine
+  setDatabaseEngine('sqlite');
+  console.log('🗄️  Database Mode: SQLITE (Offline Mode)');
 };
 
 

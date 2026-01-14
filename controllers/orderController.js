@@ -5,27 +5,27 @@ import { db } from '../db/index.js';
 const generateOrderNumber = (branchCode) => {
   const today = new Date();
   const dateStr = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, '0')}${String(today.getDate()).padStart(2, '0')}`;
-  
+
   // Get last order number for today
   const lastOrder = db.prepare(`
     SELECT orderNumber FROM orders 
     WHERE orderNumber LIKE ? 
     ORDER BY id DESC LIMIT 1
   `).get(`${branchCode}-${dateStr}-%`);
-  
+
   let sequence = 1;
   if (lastOrder) {
     const parts = lastOrder.orderNumber.split('-');
     sequence = parseInt(parts[parts.length - 1]) + 1;
   }
-  
+
   return `${branchCode}-${dateStr}-${String(sequence).padStart(4, '0')}`;
 };
 
 // Helper to format order response
 const formatOrder = (orderRow, includeItems = true) => {
   if (!orderRow) return null;
-  
+
   const order = {
     _id: orderRow.id.toString(),
     id: orderRow.id.toString(),
@@ -51,7 +51,7 @@ const formatOrder = (orderRow, includeItems = true) => {
     createdAt: orderRow.createdAt || orderRow.updated_at,
     updatedAt: orderRow.updated_at
   };
-  
+
   if (includeItems) {
     const items = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(orderRow.id);
     order.items = items.map(item => ({
@@ -64,7 +64,7 @@ const formatOrder = (orderRow, includeItems = true) => {
       notes: item.notes
     }));
   }
-  
+
   return order;
 };
 
@@ -72,9 +72,27 @@ const formatOrder = (orderRow, includeItems = true) => {
 export const createOrder = async (req, res) => {
   const transaction = db.transaction(() => {
     try {
-      const { items, orderType, tableId, customerId, customerName, customerPhone, notes, paymentMethod, tax: providedTax, finalTotal: providedTotal } = req.body;
+      const { items, orderType, notes, paymentMethod, tax: providedTax, finalTotal: providedTotal } = req.body;
+
+      // Handle parameter aliases from POS
+      const customerId = req.body.customerId || req.body.customer; // POS sends 'customer'
+      const customerName = req.body.customerName;
+      const customerPhone = req.body.customerPhone;
+
+      // Handle table lookup
+      let tableId = req.body.tableId;
+      const tableNumberParam = req.body.tableNumber;
+
       const branchId = req.user.branch._id || req.user.branch.id;
       const branchCode = req.user.branch.branchCode || 'MAIN';
+
+      // Look up table by number if ID is missing but number is provided
+      if (!tableId && tableNumberParam) {
+        const tableObj = db.prepare('SELECT id FROM tables WHERE (number = ? OR tableNumber = ?) AND branch = ?').get(tableNumberParam, tableNumberParam, branchId.toString());
+        if (tableObj) {
+          tableId = tableObj.id;
+        }
+      }
 
       if (!items || !Array.isArray(items) || items.length === 0) {
         throw new Error('Order must contain at least one item');
@@ -776,10 +794,70 @@ export const getOrderStats = async (req, res) => {
       }
     });
   } catch (error) {
+
     console.error('Get order stats error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to fetch order statistics'
+    });
+  }
+};
+
+// Hard delete order - SQLite only (Admin/Manager only)
+export const deleteOrder = async (req, res) => {
+  const transaction = db.transaction(() => {
+    try {
+      const { id } = req.params;
+      const branchId = req.user.branch._id || req.user.branch.id;
+
+      const orderRow = db.prepare('SELECT * FROM orders WHERE id = ? AND branch = ?').get(id, branchId.toString());
+      if (!orderRow) {
+        throw new Error('Order not found');
+      }
+
+      // Restore stock if order wasn't already cancelled
+      if (orderRow.status !== 'cancelled') {
+        const items = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(id);
+        for (const item of items) {
+          db.prepare('UPDATE products SET stock = stock + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+            .run(item.quantity, item.product_id);
+        }
+      }
+
+      // Free table if occupied by this order
+      if (orderRow.tableId && orderRow.status !== 'completed' && orderRow.status !== 'cancelled') {
+        db.prepare('UPDATE tables SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+          .run('available', orderRow.tableId);
+      }
+
+      // Delete items and order
+      db.prepare('DELETE FROM order_items WHERE order_id = ?').run(id);
+      db.prepare('DELETE FROM orders WHERE id = ?').run(id);
+
+      return orderRow;
+    } catch (error) {
+      throw error;
+    }
+  });
+
+  try {
+    const deletedOrder = transaction();
+
+    // Emit real-time event
+    if (req.io) {
+      const branchId = req.user.branch._id || req.user.branch.id;
+      req.io.to(`branch-${branchId}`).emit('order-deleted', { id: req.params.id });
+    }
+
+    res.json({
+      success: true,
+      message: 'Order permanently deleted'
+    });
+  } catch (error) {
+    console.error('Delete order error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to delete order'
     });
   }
 };

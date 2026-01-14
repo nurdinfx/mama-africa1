@@ -9,7 +9,9 @@ import {
   updateOrderStatus,
   processPayment,
   getOrderStats,
-  updateOrder
+
+  updateOrder,
+  deleteOrder
 } from '../controllers/orderController.js';
 
 const router = express.Router();
@@ -21,5 +23,6 @@ router.get('/kitchen', auth, authorize('admin', 'manager', 'chef', 'kitchen'), g
 router.get('/stats', auth, authorize('admin', 'manager'), getOrderStats);
 router.put('/:id/status', auth, authorize('admin', 'chef', 'manager', 'kitchen'), updateOrderStatus);
 router.post('/:id/payment', auth, authorize('admin', 'manager', 'cashier'), processPayment);
+router.delete('/:id', auth, authorize('admin', 'manager'), deleteOrder);
 
 export default router;
